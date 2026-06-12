@@ -185,6 +185,7 @@ void setup() {
     xTaskCreate(heartbeatTask, "heartbeat", 4096, nullptr, 1, &hHeartbeat);
 
     feedbackBoot();
+    Lcd.showReady();
     Serial.printf("[InOut] Ready  IN:%s OUT:%s  SD:%s  LCD:%s\n",
                   NfcReader.isOk(READER_IN)  ? "OK" : "FAIL",
                   NfcReader.isOk(READER_OUT) ? "OK" : "FAIL",

@@ -136,4 +136,14 @@ public:
     }
 
     void setFallback(const String& s) { _fallback = s; }
+
+    // Call once at end of setup() — clears boot messages and shows idle immediately
+    void showReady() {
+        if (!_found) return;
+        _lcd->clear();
+        delay(10);
+        _showingTap  = false;
+        _lastClockMs = millis();
+        renderIdle();
+    }
 } Lcd;

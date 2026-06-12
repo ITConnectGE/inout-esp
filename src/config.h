@@ -66,6 +66,7 @@ struct ConfigData {
         buzzPin       = p.getInt("buzz_pin",     DEFAULT_BUZZ);
         relayMs       = p.getInt("relay_ms",     DEFAULT_RELAY_MS);
         configVersion = p.getInt("cfg_ver",      1);
+        timezone      = p.getString("tz",         "Asia/Tbilisi");
         p.end();
         Serial.printf("[Config] server=%s\n", serverUrl.c_str());
     }
