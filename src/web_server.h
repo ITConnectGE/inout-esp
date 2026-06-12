@@ -298,12 +298,13 @@ private:
         if (type == "all") {
             // 1. Clear NVS config
             Preferences p; p.begin("cp", false); p.clear(); p.end();
-            // 2. Wipe all SD data
+            // 2. Wipe all SD data including photos
             if (SdManager.isMounted()) {
                 SD.remove(EMPLOYEES_FILE);
                 SD.remove(EVENTS_LOG);
                 SD.remove(ADMINS_FILE);
                 SD.remove(CONFIG_BACKUP);
+                SdManager.deleteAllPhotos();
                 Serial.println("[Reset] SD data wiped");
             }
             // 3. Recreate default admin (admin / 12345678)
@@ -373,10 +374,30 @@ private:
         if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String localId = doc["local_id"] | "";
         if (localId.length() == 0) { jsend(400,"{\"error\":\"local_id required\"}"); return; }
+        SdManager.deletePhotosForEmployee(localId);
         if (SdManager.deleteEmployee(localId))
             jsend(200, "{\"ok\":true}");
         else
             jsend(404, "{\"error\":\"employee not found\"}");
+    }
+
+    // ── POST /api/photos/delete ───────────────────────────────────────────────
+    void handleDeletePhoto() {
+        Session s; if (!requireAuth(s)) return;
+        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        JsonDocument doc;
+        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        String filename = doc["file"] | "";
+        // Prevent path traversal
+        if (filename.length() == 0 || filename.indexOf('/') >= 0 || filename.indexOf("..") >= 0) {
+            jsend(400, "{\"error\":\"invalid filename\"}"); return;
+        }
+        String path = "/photos/" + filename;
+        if (!SdManager.isMounted() || !SD.exists(path)) {
+            jsend(404, "{\"error\":\"not found\"}"); return;
+        }
+        SD.remove(path);
+        jsend(200, "{\"ok\":true}");
     }
 
     // ── POST /api/employees/card ──────────────────────────────────────────────
@@ -615,6 +636,7 @@ public:
         _server.on("/api/employees/card/assign", HTTP_POST,   [this]{ handleDirectAssignCard(); });
         _server.on("/api/employees/pending", HTTP_GET,    [this]{ handlePendingTap(); });
         _server.on("/api/photos",            HTTP_GET,    [this]{ handleListPhotos(); });
+        _server.on("/api/photos/delete",     HTTP_POST,   [this]{ handleDeletePhoto(); });
 
         _server.onNotFound([this]{
             const String& uri = _server.uri();

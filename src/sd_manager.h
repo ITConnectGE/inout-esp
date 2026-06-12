@@ -9,6 +9,7 @@
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include <WebServer.h>
+#include <vector>
 #include "config.h"
 
 #define EMPLOYEES_FILE "/data/employees.json"
@@ -387,5 +388,71 @@ public:
         if (uri == "/" || uri == "/admin" || uri == "/admin/") return "/www/index.html";
         if (uri.startsWith("/admin/")) return "/www" + uri.substring(6);
         return "/www" + uri;
+    }
+
+    // Delete every file in /photos — used by factory reset
+    void deleteAllPhotos() {
+        if (!_mounted) return;
+        File dir = SD.open("/photos");
+        if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return; }
+        std::vector<String> paths;
+        File entry;
+        while ((entry = dir.openNextFile())) {
+            if (!entry.isDirectory()) paths.push_back(String(entry.name()));
+            entry.close();
+        }
+        dir.close();
+        for (const String& p : paths) { SD.remove(p); }
+        Serial.printf("[SD] Deleted %u photos\n", (unsigned)paths.size());
+    }
+
+    // Delete all photos whose filename UID prefix matches any card of the given employee
+    void deletePhotosForEmployee(const String& localId) {
+        if (!_mounted) return;
+        // Collect UIDs for this employee
+        std::vector<String> uids;
+        {
+            File f = SD.open(EMPLOYEES_FILE, FILE_READ);
+            if (f) {
+                JsonDocument doc;
+                if (!deserializeJson(doc, f)) {
+                    for (JsonObject emp : doc["employees"].as<JsonArray>()) {
+                        if (String(emp["local_id"]|"") != localId) continue;
+                        for (JsonObject card : emp["cards"].as<JsonArray>()) {
+                            String uid = String(card["uid"] | "");
+                            uid.toUpperCase();
+                            if (uid.length()) uids.push_back(uid);
+                        }
+                        break;
+                    }
+                }
+                f.close();
+            }
+        }
+        if (uids.empty()) return;
+        // Collect matching photo paths, then delete
+        std::vector<String> toDelete;
+        File dir = SD.open("/photos");
+        if (dir && dir.isDirectory()) {
+            File entry;
+            while ((entry = dir.openNextFile())) {
+                if (entry.isDirectory()) { entry.close(); continue; }
+                String fpath = String(entry.name());
+                entry.close();
+                int slash = fpath.lastIndexOf('/');
+                String fname = slash >= 0 ? fpath.substring(slash + 1) : fpath;
+                int us = fname.indexOf('_');
+                String fuid = us > 0 ? fname.substring(0, us) : fname;
+                fuid.toUpperCase();
+                for (const String& uid : uids) {
+                    if (fuid == uid) { toDelete.push_back(fpath); break; }
+                }
+            }
+            dir.close();
+        }
+        for (const String& p : toDelete) {
+            SD.remove(p);
+            Serial.printf("[SD] Deleted employee photo: %s\n", p.c_str());
+        }
     }
 } SdManager;

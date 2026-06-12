@@ -246,13 +246,15 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
 
 /* Photos */
 .photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:2px}
-.photo-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rsm);overflow:hidden;cursor:pointer;transition:box-shadow .15s}
+.photo-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rsm);overflow:hidden;transition:box-shadow .15s;position:relative}
 .photo-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.12)}
-.photo-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:var(--s3);min-height:60px}
-.photo-meta{padding:8px 10px}
+.photo-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:var(--s3);min-height:60px;cursor:pointer}
+.photo-meta{padding:8px 10px 6px}
 .photo-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .photo-uid{font-size:10px;color:var(--hint);font-family:ui-monospace,monospace;margin-top:1px}
 .photo-ts{font-size:11px;color:var(--muted);margin-top:2px}
+.photo-del{display:block;width:100%;margin-top:6px;padding:4px 0;font-size:11px;color:var(--danger,#e53935);background:none;border:1px solid currentColor;border-radius:4px;cursor:pointer;text-align:center;opacity:.7}
+.photo-del:hover{opacity:1;background:rgba(229,57,53,.06)}
 </style>
 </head>
 <body>
@@ -1570,16 +1572,23 @@ function renderPhotos(){
   }
   const sorted=[...filtered].sort((a,b)=>(b.ts||'').localeCompare(a.ts||''));
   wrap.innerHTML='<div class="photo-grid">'+sorted.map(p=>`
-    <div class="photo-card" onclick="viewPhoto('${p.file}')">
-      <img src="/photos/${p.file}?token=${TOKEN}" alt="" loading="lazy" onerror="this.style.display='none'">
+    <div class="photo-card">
+      <img src="/photos/${p.file}?token=${TOKEN}" alt="" loading="lazy" onerror="this.style.display='none'" onclick="viewPhoto('${p.file}')" style="cursor:pointer">
       <div class="photo-meta">
         <div class="photo-name">${p.name||'<span style="color:var(--hint)">Unknown</span>'}</div>
         <div class="photo-uid">${p.uid}</div>
         <div class="photo-ts">${p.ts||''}</div>
+        <button class="photo-del" onclick="deletePhoto('${p.file}')">Delete</button>
       </div>
     </div>`).join('')+'</div>';
 }
 function viewPhoto(file){window.open('/photos/'+file+'?token='+TOKEN,'_blank');}
+async function deletePhoto(file){
+  if(!confirm('Delete this photo?'))return;
+  const r=await fetch('/api/photos/delete',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':TOKEN},body:JSON.stringify({file})});
+  if(r.ok){_photos=_photos.filter(p=>p.file!==file);renderPhotos();}
+  else alert('Delete failed');
+}
 
 setInterval(()=>lg('/api/local/events?limit=300').then(d=>{if(d?.events){S.events=d.events;renderDash();renderEvents();renderAll();}}),10000);
 setInterval(syncServer,60000);
