@@ -1,0 +1,1536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>InOut</title>
+<style>
+:root{
+  --bg:#f5f5f3;--surface:#fff;--s2:#f0f0ee;--s3:#e8e8e5;
+  --border:#e2e1da;--border2:#c4c3bc;
+  --text:#1a1a18;--muted:#6b6b67;--hint:#9b9b96;
+  --blue:#178DFF;--blue-d:#0f7ae0;--blue-bg:#e8f3ff;--blue-tx:#0c4a8a;
+  --green:#39955a;--green-bg:#eaf5ee;--green-tx:#1a5430;
+  --amber:#b07a10;--amber-bg:#fef3dc;--amber-tx:#7a4e00;
+  --red:#c0392b;--red-bg:#fdecea;--red-tx:#7a1e14;
+  --r:10px;--rsm:7px;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#161614;--surface:#1f1f1d;--s2:#272725;--s3:#2f2f2c;
+  --border:#2e2e2b;--border2:#3e3e3a;
+  --text:#f0f0ec;--muted:#a0a09a;--hint:#606060;
+  --blue:#4aabff;--blue-d:#6abbff;--blue-bg:#0d2540;--blue-tx:#90ccff;
+  --green:#4caf70;--green-bg:#0f2d1a;--green-tx:#7dd89a;
+  --amber:#e0a030;--amber-bg:#2d1e00;--amber-tx:#f0c060;
+  --red:#e05540;--red-bg:#2d0e0a;--red-tx:#f09080;
+}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+     background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;min-height:100vh}
+
+/* ── Login ─────────────────────────────────────────────────────────────────── */
+#login-screen{display:flex;align-items:center;justify-content:center;
+              min-height:100vh;padding:20px}
+.login-box{background:var(--surface);border:1px solid var(--border);
+           border-radius:14px;padding:32px 28px;width:100%;max-width:360px}
+.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.login-mark{width:40px;height:40px;background:var(--blue);border-radius:10px;
+            display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.login-mark svg{width:22px;height:22px;fill:none;stroke:#fff;stroke-width:2.2;
+                stroke-linecap:round;stroke-linejoin:round}
+.login-title{font-size:18px;font-weight:600}
+.login-sub{font-size:13px;color:var(--muted);margin-top:2px}
+.lfield{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.lfield label{font-size:13px;font-weight:500}
+.lfield input{padding:10px 12px;border:1px solid var(--border2);border-radius:var(--rsm);
+              background:var(--bg);color:var(--text);font-size:14px;font-family:inherit;outline:none}
+.lfield input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
+.lerr{font-size:12px;color:var(--red-tx);background:var(--red-bg);padding:8px 12px;
+      border-radius:var(--rsm);margin-bottom:12px;display:none}
+.lerr.show{display:block}
+.lbtn{width:100%;padding:11px;border-radius:var(--rsm);background:var(--blue);
+      color:#fff;font-size:14px;font-weight:500;border:none;cursor:pointer;
+      font-family:inherit;transition:opacity .15s}
+.lbtn:hover{opacity:.9}.lbtn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── Change password screen ────────────────────────────────────────────────── */
+#change-pass-screen{display:none;align-items:center;justify-content:center;
+                    min-height:100vh;padding:20px}
+.cp-box{background:var(--surface);border:1px solid var(--border);
+        border-radius:14px;padding:32px 28px;width:100%;max-width:360px}
+.cp-box h2{font-size:16px;font-weight:600;margin-bottom:6px}
+.cp-box p{font-size:13px;color:var(--muted);margin-bottom:20px;line-height:1.5}
+
+/* ── App shell ─────────────────────────────────────────────────────────────── */
+#app{display:none;height:100vh;overflow:hidden;flex-direction:column}
+#app.show{display:flex}
+.shell{display:flex;flex:1;overflow:hidden}
+.sidebar{width:220px;min-width:220px;background:var(--surface);
+         border-right:1px solid var(--border);display:flex;flex-direction:column;
+         transition:transform .25s;z-index:30}
+@media(max-width:700px){
+  .sidebar{position:fixed;top:0;left:0;height:100%;transform:translateX(-100%);
+           box-shadow:4px 0 20px rgba(0,0,0,.15)}
+  .sidebar.open{transform:translateX(0)}
+  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:29}
+  .overlay.show{display:block}
+  .menu-btn{display:flex!important}
+  .content{padding:14px 14px 40px!important}
+  .topbar{padding:0 14px!important}
+  .metrics{grid-template-columns:1fr 1fr!important}
+  .grid2{grid-template-columns:1fr!important}
+}
+@media(min-width:701px){.overlay,.menu-btn{display:none}}
+.logo{padding:18px 16px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.logo-mark{width:32px;height:32px;background:var(--blue);border-radius:8px;
+           display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo-mark svg{width:17px;height:17px;fill:none;stroke:#fff;stroke-width:2.2;
+               stroke-linecap:round;stroke-linejoin:round}
+.logo-name{font-size:14px;font-weight:600}
+.logo-sub{font-size:11px;color:var(--muted);margin-top:1px}
+nav{flex:1;padding:10px 8px;overflow-y:auto}
+.nav-sep{font-size:10px;color:var(--hint);text-transform:uppercase;letter-spacing:.06em;
+         padding:10px 10px 4px;margin-top:4px}
+.ni{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:var(--rsm);
+    font-size:13px;color:var(--muted);border:none;background:none;width:100%;
+    text-align:left;cursor:pointer;font-family:inherit;margin-bottom:2px;transition:background .12s,color .12s}
+.ni:hover{background:var(--s2);color:var(--text)}
+.ni.active{background:var(--s2);color:var(--text);font-weight:500}
+.ni svg{width:15px;height:15px;flex-shrink:0;opacity:.65}.ni.active svg{opacity:1}
+.ni-badge{margin-left:auto;background:var(--red-bg);color:var(--red-tx);font-size:10px;padding:1px 6px;border-radius:99px;font-weight:600}
+.sidebar-footer{padding:8px 8px 14px;border-top:1px solid var(--border)}
+.user-chip{margin:0 10px 8px;padding:8px 10px;background:var(--s2);border-radius:var(--rsm);
+           font-size:12px;display:flex;align-items:center;gap:8px}
+.user-av{width:24px;height:24px;border-radius:50%;background:var(--blue-bg);
+         color:var(--blue-tx);display:flex;align-items:center;justify-content:center;
+         font-size:10px;font-weight:600;flex-shrink:0}
+.user-info{flex:1;min-width:0}
+.user-name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-role{color:var(--muted);font-size:10px;text-transform:capitalize}
+.sync-bar{margin:0 10px 6px;padding:7px 10px;background:var(--s2);border-radius:var(--rsm);
+          font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.sdot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
+.sdot.off{background:var(--amber);animation:blink 1.5s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.main-area{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 20px;
+        height:54px;display:flex;align-items:center;justify-content:space-between;
+        flex-shrink:0;gap:12px}
+.page-title{font-size:15px;font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tb-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.menu-btn{background:none;border:none;cursor:pointer;color:var(--text);padding:6px;
+          border-radius:6px;display:none;align-items:center;justify-content:center}
+.menu-btn:hover{background:var(--s2)}
+.server-chip{font-size:11px;padding:3px 9px;border-radius:99px;background:var(--s2);color:var(--muted);white-space:nowrap}
+.offline-bar{background:var(--amber-bg);border-bottom:1px solid var(--amber-tx);
+             color:var(--amber-tx);padding:7px 20px;font-size:12px;display:none;
+             align-items:center;gap:8px;flex-shrink:0}
+.offline-bar.show{display:flex}
+.content{flex:1;overflow-y:auto;padding:20px;padding-bottom:40px}
+.page{display:none}.page.active{display:block}
+
+/* Metrics */
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+.metric{background:var(--surface);border:1px solid var(--border);border-radius:var(--rsm);padding:12px 14px}
+.mlbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.mval{font-size:22px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.msub{font-size:11px;color:var(--hint);margin-top:3px}
+
+/* Card */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:14px}
+.card-hd{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);gap:8px}
+.card-hd h2{font-size:13px;font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+
+/* Table */
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{text-align:left;padding:8px 14px;font-size:11px;font-weight:500;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--s2)}
+.empty-row td{text-align:center;padding:28px;color:var(--hint);font-size:13px}
+
+/* Toolbar */
+.toolbar{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.toolbar input,.toolbar select{padding:6px 10px;border-radius:var(--rsm);border:1px solid var(--border2);background:var(--surface);color:var(--text);font-size:13px;font-family:inherit;outline:none}
+.toolbar input:focus,.toolbar select:focus{border-color:var(--blue)}
+.toolbar input{flex:1;min-width:120px;max-width:220px}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:500;white-space:nowrap}
+.b-in{background:var(--blue-bg);color:var(--blue-tx)}.b-out{background:var(--s2);color:var(--muted)}
+.b-granted{background:var(--green-bg);color:var(--green-tx)}.b-denied{background:var(--red-bg);color:var(--red-tx)}
+.b-active{background:var(--green-bg);color:var(--green-tx)}.b-inactive{background:var(--s2);color:var(--muted)}
+.b-lost{background:var(--red-bg);color:var(--red-tx)}.b-synced{background:var(--green-bg);color:var(--green-tx)}
+.b-pending{background:var(--amber-bg);color:var(--amber-tx)}.b-super{background:var(--blue-bg);color:var(--blue-tx)}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
+.dot-g{background:var(--green)}.dot-r{background:var(--red)}
+
+/* Avatar */
+.av{width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex-shrink:0}
+
+/* Buttons */
+button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 13px;border-radius:var(--rsm);font-size:13px;font-weight:500;background:var(--surface);border:1px solid var(--border2);color:var(--text);transition:background .12s}
+.btn:hover{background:var(--s2)}.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn-primary:hover{background:var(--blue-d)}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn-icon{padding:5px;border-radius:6px;background:none;border:none;color:var(--muted);display:inline-flex}
+.btn-icon:hover{background:var(--s2);color:var(--text)}
+.btn-danger{background:var(--red-bg);color:var(--red-tx);border-color:var(--border)}
+
+/* Form field (modal) */
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.field label{font-size:12px;font-weight:500;color:var(--muted)}
+.field input,.field select{padding:8px 10px;border:1px solid var(--border2);border-radius:var(--rsm);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none;width:100%;min-width:0}
+.field input:focus,.field select:focus{border-color:var(--blue)}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:480px){.field-row{grid-template-columns:1fr}.modal{padding:14px;border-radius:var(--rsm)}.modal-bg{padding:8px}}
+
+/* Modal */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;align-items:flex-start;justify-content:center;padding:12px;overflow-y:auto}
+.modal-bg.show{display:flex}
+.modal{background:var(--surface);border-radius:var(--r);padding:18px;width:100%;max-width:500px;max-height:94vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)}
+.modal-body{display:flex;flex-direction:column;gap:0}
+.modal h3{font-size:15px;font-weight:600;margin-bottom:16px}
+.modal-footer{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.modal-err{font-size:12px;color:var(--red-tx);background:var(--red-bg);padding:7px 10px;border-radius:var(--rsm);margin-bottom:10px;display:none}
+.modal-err.show{display:block}
+
+/* Card tap widget */
+.tap-widget{text-align:center;padding:20px;background:var(--s2);border-radius:var(--rsm);margin:10px 0}
+.tap-icon{font-size:32px;margin-bottom:6px}
+.tap-msg{font-size:13px;font-weight:500}
+.tap-sub{font-size:12px;color:var(--muted);margin-top:3px}
+.tap-timer{font-size:22px;font-weight:600;color:var(--blue);margin-top:6px}
+.tap-ok{background:var(--green-bg);border-radius:var(--rsm);padding:12px;text-align:center}
+.field-err{font-size:11px;color:var(--red-tx);margin-top:2px;display:none}
+.field-err.show{display:block}
+.field input.invalid{border-color:var(--red-tx)}
+.field input.valid{border-color:var(--green)}
+
+/* Event feed */
+.ev-row{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12px}
+.ev-row:last-child{border-bottom:none}
+.ev-name{flex:1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Device info */
+.dg{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;font-size:12px;margin:12px 0}
+.dg-l{color:var(--muted)}.dg-v{font-weight:500;font-family:ui-monospace,monospace;font-size:11px;text-align:right;word-break:break-all}
+
+/* Setup form */
+.setup-field{padding:11px 15px;display:flex;flex-direction:column;gap:5px;border-bottom:1px solid var(--border)}
+.setup-field:last-child{border-bottom:none}
+.setup-field label{font-size:13px;font-weight:500}
+.setup-field input{padding:8px 10px;border:1px solid var(--border2);border-radius:var(--rsm);background:var(--bg);color:var(--text);font-size:13px;font-family:inherit;outline:none}
+.setup-field input:focus{border-color:var(--blue)}
+.setup-field-row{flex-direction:row;align-items:center;justify-content:space-between;gap:12px}
+.toggle{position:relative;width:42px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.ttrack{position:absolute;inset:0;background:var(--border2);border-radius:99px;cursor:pointer;transition:background .2s}
+.toggle input:checked+.ttrack{background:var(--blue)}
+.ttrack:before{content:'';position:absolute;height:18px;width:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s}
+.toggle input:checked+.ttrack:before{transform:translateX(18px)}
+.info-row{display:flex;justify-content:space-between;align-items:center;padding:8px 15px;font-size:12px;border-bottom:1px solid var(--border)}
+.info-row:last-child{border-bottom:none}
+.ir-l{color:var(--muted)}.ir-v{font-weight:500;font-family:ui-monospace,monospace;font-size:11px;text-align:right;word-break:break-all}
+.chip{display:inline-block;padding:2px 7px;border-radius:99px;font-size:11px;font-weight:600}
+.chip-g{background:var(--green-bg);color:var(--green-tx)}.chip-r{background:var(--red-bg);color:var(--red-tx)}.chip-b{background:var(--blue-bg);color:var(--blue-tx)}.chip-a{background:var(--amber-bg);color:var(--amber-tx)}
+
+/* Toast */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(60px);background:var(--text);color:var(--bg);padding:9px 20px;border-radius:99px;font-size:13px;font-weight:500;transition:transform .22s,opacity .22s;opacity:0;z-index:99;pointer-events:none;white-space:nowrap}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+@media(max-width:500px){.hide-xs{display:none}tbody td,thead th{padding:8px 10px}}
+</style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="login-mark"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4z"/></svg></div>
+      <div><div class="login-title">InOut</div><div class="login-sub">Sign in to continue</div></div>
+    </div>
+    <div class="lerr" id="lerr"></div>
+    <div class="lfield"><label>Username</label><input type="text" id="l-user" autocapitalize="none" autocorrect="off" placeholder="admin"></div>
+    <div class="lfield"><label>Password</label>
+      <div style="position:relative">
+        <input type="password" id="l-pass" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()" style="padding-right:40px;width:100%">
+        <button type="button" onclick="togglePwd('l-pass',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:4px">👁</button>
+      </div>
+    </div>
+    <button class="lbtn" id="l-btn" onclick="doLogin()">Sign in</button>
+  </div>
+</div>
+
+<!-- Change password (forced on first login) -->
+<div id="change-pass-screen" style="display:none;align-items:center;justify-content:center;min-height:100vh;padding:20px">
+  <div class="cp-box">
+    <div class="login-logo" style="margin-bottom:16px">
+      <div class="login-mark"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4z"/></svg></div>
+      <div><div class="login-title">Change password</div></div>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:20px;line-height:1.5">This is your first login. You must set a new password before continuing.</p>
+    <div class="lerr" id="cp-err"></div>
+    <div class="lfield"><label>Current password</label>
+      <div style="position:relative"><input type="password" id="cp-old" placeholder="Current password" style="padding-right:40px;width:100%">
+      <button type="button" onclick="togglePwd('cp-old',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:4px">👁</button></div>
+    </div>
+    <div class="lfield"><label>New password <span style="color:var(--hint);font-weight:400">(min 8 chars)</span></label>
+      <div style="position:relative"><input type="password" id="cp-new" placeholder="New password" style="padding-right:40px;width:100%">
+      <button type="button" onclick="togglePwd('cp-new',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:4px">👁</button></div>
+    </div>
+    <div class="lfield"><label>Confirm new password</label>
+      <div style="position:relative"><input type="password" id="cp-confirm" placeholder="Confirm" onkeydown="if(event.key==='Enter')doChangePassword()" style="padding-right:40px;width:100%">
+      <button type="button" onclick="togglePwd('cp-confirm',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:4px">👁</button></div>
+    </div>
+    <button class="lbtn" id="cp-btn" onclick="doChangePassword()">Set password & continue</button>
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+  <div class="shell">
+
+    <aside class="sidebar" id="sidebar">
+      <div class="logo">
+        <div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4z"/></svg></div>
+        <div><div class="logo-name">InOut</div><div class="logo-sub" id="sb-id">—</div></div>
+      </div>
+      <nav id="main-nav">
+        <!-- Filled by JS based on role -->
+      </nav>
+      <div class="user-chip">
+        <div class="user-av" id="user-av">A</div>
+        <div class="user-info">
+          <div class="user-name" id="user-name">—</div>
+          <div class="user-role" id="user-role">—</div>
+        </div>
+      </div>
+      <div class="sync-bar"><div class="sdot off" id="sdot"></div><span id="sync-txt">Connecting…</span></div>
+      <div class="sidebar-footer">
+        <button class="ni" onclick="openChangePassword()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Change password
+        </button>
+        <button class="ni" onclick="doLogout()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out
+        </button>
+      </div>
+    </aside>
+
+    <div class="main-area">
+      <div class="topbar">
+        <button class="menu-btn" onclick="openSidebar()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <span class="page-title" id="page-title">Dashboard</span>
+        <div class="tb-right">
+          <span class="server-chip" id="chip">● Offline</span>
+          <button class="btn btn-sm" onclick="forceSync()">Sync</button>
+        </div>
+      </div>
+      <div class="offline-bar" id="offline-bar">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Server unreachable — showing local data. Events sync automatically.
+      </div>
+
+      <div class="content">
+
+        <!-- Dashboard -->
+        <div class="page active" id="page-dashboard">
+          <div class="metrics">
+            <div class="metric"><div class="mlbl">Employees</div><div class="mval" id="m-emp">—</div></div>
+            <div class="metric"><div class="mlbl">Events today</div><div class="mval" id="m-today">—</div></div>
+            <div class="metric"><div class="mlbl">Unsynced</div><div class="mval" id="m-unsynced">—</div><div class="msub" id="m-usub"></div></div>
+            <div class="metric"><div class="mlbl">Denied today</div><div class="mval" id="m-denied">—</div></div>
+          </div>
+          <div class="grid2">
+            <div class="card">
+              <div class="card-hd"><h2>Recent events</h2><button class="btn btn-sm" onclick="nav('events',null)">All →</button></div>
+              <div id="dash-events"></div>
+            </div>
+            <div class="card">
+              <div class="card-hd"><h2>Who's inside</h2><span id="whos-count" style="font-size:12px;color:var(--green-tx)"></span></div>
+              <div id="whos-in"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Events -->
+        <div class="page" id="page-events">
+          <div class="card">
+            <div class="card-hd"><h2>Access events</h2>
+              <div style="display:flex;gap:6px;align-items:center">
+                <span id="ev-src" style="font-size:11px;color:var(--muted);padding:2px 7px;background:var(--s2);border-radius:99px">Local</span>
+                <button class="btn btn-sm" onclick="exportCsv()">Export</button>
+              </div>
+            </div>
+            <div class="toolbar">
+              <input type="text" id="ev-q" placeholder="Name or UID…" oninput="renderEvents()">
+              <select id="ev-dir" onchange="renderEvents()"><option value="">All dirs</option><option value="in">IN</option><option value="out">OUT</option></select>
+              <select id="ev-dec" onchange="renderEvents()"><option value="">All</option><option value="granted">Granted</option><option value="denied">Denied</option></select>
+              <select id="ev-syn" onchange="renderEvents()"><option value="">All sync</option><option value="false">Unsynced</option><option value="true">Synced</option></select>
+            </div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Employee</th><th>Dir</th><th>Decision</th><th class="hide-xs">Sync</th><th>Time</th></tr></thead>
+              <tbody id="ev-body"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+        <!-- Employees -->
+        <div class="page" id="page-employees">
+          <div class="card">
+            <div class="card-hd"><h2>Employees</h2>
+              <div style="display:flex;gap:6px;align-items:center">
+                <span id="emp-src" style="font-size:11px;color:var(--muted);padding:2px 7px;background:var(--s2);border-radius:99px">Local</span>
+                <button class="btn btn-sm btn-primary" onclick="openAddEmployee()">+ Add</button>
+              </div>
+            </div>
+            <div class="toolbar">
+              <input type="text" id="emp-q" placeholder="Name, department…" oninput="renderEmployees()">
+              <select id="emp-st" onchange="renderEmployees()"><option value="">All</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+            </div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Name</th><th class="hide-xs">Dept / Position</th><th>Cards</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+              <tbody id="emp-body"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+        <!-- Cards -->
+        <div class="page" id="page-cards">
+          <div class="card">
+            <div class="card-hd"><h2>Cards</h2></div>
+            <div class="toolbar">
+              <input type="text" id="card-q" placeholder="UID or employee…" oninput="renderCards()">
+              <select id="card-st" onchange="renderCards()"><option value="">All</option><option value="active">Active</option><option value="lost">Lost</option><option value="disabled">Disabled</option></select>
+            </div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>UID</th><th>Label</th><th>Employee</th><th class="hide-xs">Type</th><th>Status</th></tr></thead>
+              <tbody id="card-body"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+        <!-- Admins (super admin only) -->
+        <div class="page" id="page-admins">
+          <div class="card">
+            <div class="card-hd"><h2>Admin accounts</h2>
+              <button class="btn btn-sm btn-primary" onclick="openAddAdmin()">+ Add admin</button>
+            </div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+              <tbody id="admin-body"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+        <!-- Device setup (super admin only) -->
+        <div class="page" id="page-setup">
+          <div id="setup-status-card" style="margin-bottom:14px"></div>
+
+          <div class="card">
+            <div class="card-hd"><h2>Server configuration</h2></div>
+            <div style="border-bottom:1px solid var(--border)"></div>
+            <div class="setup-field"><label>Server URL</label><input type="url" id="f-server" placeholder="" autocapitalize="none" autocorrect="off"></div>
+            <div class="setup-field"><label>Device token <span style="color:var(--hint);font-weight:400">— from admin panel</span></label><input type="password" id="f-token" placeholder="tok_••••••••" autocapitalize="none" autocorrect="off"></div>
+            <div class="setup-field">
+              <label>Timezone</label>
+              <select id="f-tz" onchange="saveTz()">
+                <option value="Asia/Tbilisi">Georgia (Tbilisi) UTC+4</option>
+                <option value="Europe/London">London UTC+0/+1</option>
+                <option value="Europe/Paris">Central Europe UTC+1/+2</option>
+                <option value="Europe/Moscow">Moscow UTC+3</option>
+                <option value="Asia/Dubai">Dubai UTC+4</option>
+                <option value="Asia/Istanbul">Istanbul UTC+3</option>
+                <option value="America/New_York">New York UTC-5/-4</option>
+                <option value="America/Los_Angeles">Los Angeles UTC-8/-7</option>
+                <option value="UTC">UTC</option>
+              </select>
+            </div>
+            <div style="padding:11px 15px;display:flex;gap:8px">
+              <button class="btn btn-primary" style="flex:1" id="btn-save-srv" onclick="saveServerConfig()">Save & test connection</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-hd"><h2>Hardware pins</h2><span style="font-size:11px;color:var(--muted)">Requires reboot</span></div>
+            <div style="border-bottom:1px solid var(--border)"></div>
+            <div class="setup-field"><label>CS IN reader</label><input type="number" id="f-csin" min="0" max="39" placeholder="4"></div>
+            <div class="setup-field"><label>CS OUT reader</label><input type="number" id="f-csout" min="0" max="39" placeholder="25"></div>
+            <div class="setup-field"><label>CS SD card</label><input type="number" id="f-cssd" min="0" max="39" placeholder="5"></div>
+            <div class="setup-field"><label>Relay pin</label><input type="number" id="f-relay" min="0" max="39" placeholder="26"></div>
+            <div class="setup-field"><label>Relay duration (ms)</label><input type="number" id="f-relayms" min="500" max="10000" step="100" placeholder="3000"></div>
+            <div class="setup-field setup-field-row">
+              <div><label>Active-LOW relay</label><div style="font-size:11px;color:var(--hint);margin-top:2px">Enable if relay triggers in reverse</div></div>
+              <label class="toggle"><input type="checkbox" id="f-activelow"><span class="ttrack"></span></label>
+            </div>
+            <div style="padding:11px 15px;display:flex;gap:8px">
+              <button class="btn btn-primary" style="flex:1" id="btn-save-hw" onclick="saveHwConfig()">Save hardware config</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-hd"><h2>Reader assignment</h2></div>
+            <div style="border-bottom:1px solid var(--border)"></div>
+            <div style="padding:12px 15px">
+              <div style="font-size:13px;margin-bottom:10px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+                  <span style="color:var(--muted)">IN reader</span>
+                  <span style="font-family:ui-monospace,monospace;font-size:12px" id="lbl-cs-in">GPIO —</span>
+                </div>
+                <div style="display:flex;justify-content:space-between">
+                  <span style="color:var(--muted)">OUT reader</span>
+                  <span style="font-family:ui-monospace,monospace;font-size:12px" id="lbl-cs-out">GPIO —</span>
+                </div>
+              </div>
+              <button class="btn btn-sm" style="width:100%" onclick="confirmSwapReaders()">⇄ Swap IN / OUT readers</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-hd"><h2>Danger zone</h2></div>
+            <div style="border-bottom:1px solid var(--border)"></div>
+            <div style="padding:11px 15px;display:flex;gap:8px">
+              <button class="btn btn-danger btn-sm" onclick="doReset('wifi')">Reset WiFi</button>
+              <button class="btn btn-danger btn-sm" onclick="doReset('all')">Factory reset</button>
+              <button class="btn btn-sm" onclick="doOpen()">🔓 Test relay</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Devices -->
+        <div class="page" id="page-devices">
+          <div id="device-body"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Employee Modal — Step 1: scan card, Step 2: details -->
+<div class="modal-bg" id="modal-emp">
+  <div class="modal">
+    <h3>Add employee</h3>
+    <div class="modal-err" id="emp-err"></div>
+
+    <!-- Step 1: Scan card -->
+    <div id="emp-step1">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.5">
+        Step 1 of 2 &mdash; Scan the employee&apos;s NFC card on the IN reader.
+      </div>
+      <div id="tap-widget-area">
+        <div class="tap-widget">
+          <div class="tap-icon">&#x1F4B3;</div>
+          <div class="tap-msg">Tap card on IN reader</div>
+          <div class="tap-sub">Waiting for scan&hellip;</div>
+          <div class="tap-timer" id="tap-countdown">&mdash;</div>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>Card UID <span style="font-weight:400;color:var(--hint)">auto-filled on scan, or type manually</span></label>
+        <input type="text" id="ef-uid" style="font-family:ui-monospace,monospace;font-size:12px;text-transform:uppercase" oninput="onUidManualInput()">
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Card label</label><input type="text" id="ef-label"></div>
+        <div class="field"><label>Card type</label>
+          <select id="ef-type">
+            <option value="mifare_uid">MIFARE UID</option>
+            <option value="mifare_desfire">MIFARE DESFire</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeModal('modal-emp')">Cancel</button>
+        <button class="btn btn-primary" id="btn-step1-next" onclick="goToStep2()" disabled>Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Employee details -->
+    <div id="emp-step2" style="display:none">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Step 2 of 2 &mdash; Employee details</div>
+      <div style="background:var(--s2);border-radius:var(--rsm);padding:8px 12px;margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:8px">
+        <span>&#x1F4B3;</span>
+        <span style="font-family:ui-monospace,monospace;font-size:11px" id="step2-uid-display"></span>
+        <button class="btn btn-sm" style="margin-left:auto;padding:3px 8px;font-size:11px" onclick="goBackToStep1()">Change</button>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>First name *</label><input type="text" id="ef-first" oninput="validateName(this)"></div>
+        <div class="field"><label>Last name *</label><input type="text" id="ef-last" oninput="validateName(this)"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Department</label><input type="text" id="ef-dept"></div>
+        <div class="field"><label>Position</label><input type="text" id="ef-pos"></div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Phone</label>
+          <input type="tel" id="ef-phone" oninput="validatePhone(this)" pattern="[+0-9\s\-\(\)]*">
+          <span class="field-err" id="ef-phone-err"></span>
+        </div>
+        <div class="field">
+          <label>Email</label>
+          <input type="email" id="ef-email" oninput="validateEmail(this)">
+          <span class="field-err" id="ef-email-err"></span>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn" onclick="goBackToStep1()">&larr; Back</button>
+        <button class="btn btn-primary" id="btn-save-emp" onclick="saveEmployee()">Create employee</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Employee Modal -->
+<div class="modal-bg" id="modal-edit-emp">
+  <div class="modal">
+    <h3>Edit employee</h3>
+    <div class="modal-err" id="edit-emp-err"></div>
+    <div class="field-row">
+      <div class="field"><label>First name *</label><input type="text" id="ee-first" oninput="validateName(this)"></div>
+      <div class="field"><label>Last name *</label><input type="text" id="ee-last" oninput="validateName(this)"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Department</label><input type="text" id="ee-dept"></div>
+      <div class="field"><label>Position</label><input type="text" id="ee-pos"></div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Phone</label>
+        <input type="tel" id="ee-phone" oninput="validatePhone(this)">
+        <span class="field-err" id="ee-phone-err"></span>
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="ee-email" oninput="validateEmail(this)">
+        <span class="field-err" id="ee-email-err"></span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <select id="ee-status">
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-edit-emp')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditEmployee()">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Admin Modal -->
+<div class="modal-bg" id="modal-admin">
+  <div class="modal">
+    <h3>Add admin</h3>
+    <div class="modal-err" id="admin-err"></div>
+    <div class="field"><label>Username</label><input type="text" id="af-user" placeholder="" autocapitalize="none"></div>
+    <div class="field"><label>Password <span style="font-weight:400;color:var(--hint)">(min 8 chars)</span></label><input type="password" id="af-pass" placeholder="••••••••"></div>
+    <div class="field"><label>Role</label>
+      <select id="af-role">
+        <option value="admin">Admin — dashboard, employees, cards</option>
+        <option value="super_admin">Super admin — full access</option>
+      </select>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5">
+      User will be required to change their password on first login.
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-admin')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAdmin()">Create admin</button>
+    </div>
+  </div>
+</div>
+
+<!-- Change password modal -->
+<div class="modal-bg" id="modal-chpass">
+  <div class="modal">
+    <h3>Change password</h3>
+    <div class="modal-err" id="chpass-err"></div>
+    <div class="field"><label>Current password</label><input type="password" id="chp-old"></div>
+    <div class="field"><label>New password</label><input type="password" id="chp-new"></div>
+    <div class="field"><label>Confirm</label><input type="password" id="chp-conf"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-chpass')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitChangePassword()">Change password</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let TOKEN = localStorage.getItem('cp_token') || '';
+let ROLE  = localStorage.getItem('cp_role')  || '';
+let USER  = localStorage.getItem('cp_user')  || '';
+const S = { status:null, employees:[], cards:[], events:[], admins:[], online:false };
+let _addEmpLocalId = '';
+let _tapPollIv = null, _countdown = null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function toast(msg,dur=2500){
+  const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),dur);
+}
+function fmtTs(ts){
+  if(!ts)return'—';const s=String(ts);
+  if(s.includes('T')&&s.includes(':')){
+    try{const d=new Date(ts);if(!isNaN(d)){
+      const today=new Date();
+      if(d.toDateString()===today.toDateString())
+        return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      return d.toLocaleDateString([],{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    }}catch{}
+  }
+  if(s.startsWith('~'))return'boot+'+s.slice(1);return s;
+}
+function fmtUptime(s){
+  if(!s)return'—';if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.floor(s%60)+'s';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+}
+const AVC=['#B5D4F4','#9FE1CB','#F5C4B3','#F4C0D1','#C0DD97','#FAD6A5'];
+const AXT=['#0C447C','#085041','#8B3A1A','#6B3660','#3A6B11','#7A4E00'];
+function avC(n){return AVC[(n||'?').charCodeAt(0)%6];}
+function avX(n){return AXT[(n||'?').charCodeAt(0)%6];}
+function ini(n){return(n||'?').split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase();}
+function av(n){return`<div class="av" style="background:${avC(n)};color:${avX(n)}">${ini(n)}</div>`;}
+function showErr(id,msg){const e=document.getElementById(id);if(e){e.textContent=msg;e.classList.add('show');}}
+function hideErr(id){const e=document.getElementById(id);if(e)e.classList.remove('show');}
+
+// ── API calls ─────────────────────────────────────────────────────────────────
+function headers(){return{'Content-Type':'application/json','X-Session-Token':TOKEN};}
+async function api(method,path,body){
+  try{
+    const r=await fetch(path,{method,headers:headers(),body:body?JSON.stringify(body):undefined});
+    const d=await r.json();
+    if(r.status===401){doLogout();return null;}
+    return{ok:r.ok,status:r.status,data:d};
+  }catch(e){return{ok:false,status:0,data:{error:e.message}};}
+}
+async function lg(p){const r=await api('GET',p);return r?.data||null;}
+async function lpost(p,b){const r=await api('POST',p,b);return r?.data||null;}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+function togglePwd(id, btn) {
+  const inp = document.getElementById(id);
+  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '🙈'; }
+  else { inp.type = 'password'; btn.textContent = '👁'; }
+}
+
+async function doLogin(){
+  const user=document.getElementById('l-user').value.trim();
+  const pass=document.getElementById('l-pass').value;
+  if(!user||!pass){showErr('lerr','Enter username and password');return;}
+  const btn=document.getElementById('l-btn');btn.disabled=true;btn.textContent='Signing in…';
+  hideErr('lerr');
+  const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass})});
+  const d=await r.json();
+  btn.disabled=false;btn.textContent='Sign in';
+  if(!r.ok){showErr('lerr',d.error||'Login failed');return;}
+  TOKEN=d.token;ROLE=d.role;USER=d.username;
+  localStorage.setItem('cp_token',TOKEN);
+  localStorage.setItem('cp_role',ROLE);
+  localStorage.setItem('cp_user',USER);
+  if(d.must_change_password){showForceChangePassword();}
+  else{showApp();}
+}
+
+function showForceChangePassword(){
+  document.getElementById('login-screen').style.display='none';
+  const s=document.getElementById('change-pass-screen');
+  s.style.display='flex';
+  document.getElementById('cp-old').value='';
+  document.getElementById('cp-new').value='';
+  document.getElementById('cp-confirm').value='';
+}
+
+async function doChangePassword(){
+  const old=document.getElementById('cp-old').value;
+  const nw=document.getElementById('cp-new').value;
+  const conf=document.getElementById('cp-confirm').value;
+  hideErr('cp-err');
+  if(nw!==conf){showErr('cp-err','Passwords do not match');return;}
+  if(nw.length<8){showErr('cp-err','Min 8 characters');return;}
+  const btn=document.getElementById('cp-btn');btn.disabled=true;btn.textContent='Saving…';
+  const r=await fetch('/api/auth/change-password',{method:'POST',headers:headers(),body:JSON.stringify({old_password:old,new_password:nw})});
+  const d=await r.json();
+  btn.disabled=false;btn.textContent='Set password & continue';
+  if(!r.ok){showErr('cp-err',d.error||'Failed');return;}
+  document.getElementById('change-pass-screen').style.display='none';
+  showApp();
+}
+
+function doLogout(){
+  fetch('/api/auth/logout',{method:'POST',headers:headers()}).catch(()=>{});
+  TOKEN='';ROLE='';USER='';
+  localStorage.removeItem('cp_token');localStorage.removeItem('cp_role');localStorage.removeItem('cp_user');
+  document.getElementById('app').classList.remove('show');
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('l-pass').value='';
+}
+
+// ── Show app ──────────────────────────────────────────────────────────────────
+function showApp(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('change-pass-screen').style.display='none';
+  document.getElementById('app').classList.add('show');
+  // User chip
+  document.getElementById('user-av').textContent=ini(USER);
+  document.getElementById('user-name').textContent=USER;
+  document.getElementById('user-role').textContent=ROLE==='super_admin'?'Super Admin':'Admin';
+  // Build nav based on role
+  buildNav();
+  loadAll();
+}
+
+function buildNav(){
+  const isSuperAdmin = ROLE === 'super_admin';
+  document.getElementById('main-nav').innerHTML = `
+    <button class="ni active" onclick="nav('dashboard',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard
+    </button>
+    <button class="ni" onclick="nav('events',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Events
+      <span class="ni-badge" id="nb" style="display:none">0</span>
+    </button>
+    <button class="ni" onclick="nav('employees',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employees
+    </button>
+    <button class="ni" onclick="nav('cards',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>Cards
+    </button>
+    ${isSuperAdmin?`
+    <div class="nav-sep">Admin</div>
+    <button class="ni" onclick="nav('admins',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/><path d="M18 8h2M22 12l-2-2 2-2"/></svg>Admins
+    </button>
+    <button class="ni" onclick="nav('setup',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>Device setup
+    </button>
+    <button class="ni" onclick="nav('devices',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>Devices
+    </button>`:''}`;
+}
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+async function loadAll(){
+  const[st,emps,evs]=await Promise.all([
+    lg('/api/local/status'),
+    lg('/api/local/employees'),
+    lg('/api/local/events?limit=300'),
+  ]);
+  if(st){S.status=st;applyStatus(st);}
+  if(emps?.employees){
+    S.employees=emps.employees;S.cards=[];
+    for(const e of emps.employees)
+      for(const c of(e.cards||[]))
+        S.cards.push({uid:c.uid,label:c.label,employee:(e.first_name||'')+' '+(e.last_name||''),type:c.type,status:c.status});
+  }
+  if(evs?.events)S.events=evs.events;
+  if(ROLE==='super_admin'){
+    const admins=await lg('/api/admins');
+    if(admins?.admins)S.admins=admins.admins;
+  }
+  renderAll();
+  syncServer();
+}
+
+async function syncServer(){
+  try{
+    const r=await fetch('/api/proxy/admin/status',{headers:{'X-Session-Token':TOKEN}});
+    S.online=r.ok&&r.status!==503;
+  }catch{S.online=false;}
+  const chip=document.getElementById('chip');
+  const bar=document.getElementById('offline-bar');
+  const dot=document.getElementById('sdot');
+  const stxt=document.getElementById('sync-txt');
+  if(S.online){
+    chip.style.cssText='background:var(--green-bg);color:var(--green-tx)';chip.textContent='● Online';
+    bar.classList.remove('show');dot.classList.remove('off');
+    stxt.textContent='Synced '+new Date().toLocaleTimeString();
+  }else{
+    chip.style.cssText='background:var(--amber-bg);color:var(--amber-tx)';chip.textContent='● Offline';
+    bar.classList.add('show');dot.classList.add('off');stxt.textContent='Server unreachable';
+  }
+}
+
+async function forceSync(){toast('Syncing…');await loadAll();toast('Done ✓');}
+
+function applyStatus(s){
+  document.getElementById('sb-id').textContent=s.identifier||'Device';
+  document.getElementById('m-unsynced').textContent=s.unsynced_events??'—';
+  document.getElementById('m-usub').textContent=(s.unsynced_events>0)?'Pending':'All synced';
+  // Update reader labels
+  const lblIn=document.getElementById('lbl-cs-in');
+  const lblOut=document.getElementById('lbl-cs-out');
+  if(lblIn)lblIn.textContent='GPIO '+s.cs_in;
+  if(lblOut)lblOut.textContent='GPIO '+s.cs_out;
+  applyStoredTz();
+  // Pre-fill setup form
+  const srv=document.getElementById('f-server');
+  if(srv&&document.activeElement!==srv)srv.value=s.server_url||'';
+  ['f-csin','f-csout','f-cssd','f-relay','f-relayms'].forEach((id,i)=>{
+    const el=document.getElementById(id);
+    if(el){el.placeholder=[s.cs_in,s.cs_out,s.cs_sd,s.relay_pin,s.relay_ms][i]||el.placeholder;}
+  });
+  // Setup status card
+  const sc=document.getElementById('setup-status-card');
+  if(sc&&s){
+    sc.innerHTML=`<div class="card">
+      <div class="card-hd"><h2>Device status</h2><span style="font-size:11px;padding:3px 8px;background:var(--blue-bg);color:var(--blue-tx);border-radius:99px">v${s.firmware||'?'}</span></div>
+      <div style="border-bottom:1px solid var(--border)"></div>
+      <div class="info-row"><span class="ir-l">IP</span><span class="ir-v">${s.ip||'—'}</span></div>
+      <div class="info-row"><span class="ir-l">Token</span><span class="ir-v">${s.token_set?'<span class="chip chip-g">Set ✓</span>':'<span class="chip chip-r">Not set</span>'}</span></div>
+      <div class="info-row"><span class="ir-l">SD card</span><span class="ir-v">${s.sd_mounted?s.sd_used_mb+'/'+s.sd_total_mb+' MB':'<span class="chip chip-r">Not mounted</span>'}</span></div>
+      <div class="info-row"><span class="ir-l">NTP</span><span class="ir-v">${s.ntp_synced?'<span class="chip chip-g">Synced</span>':'<span class="chip chip-a">Not synced</span>'}</span></div>
+      <div class="info-row"><span class="ir-l">LCD</span><span class="ir-v">${s.lcd_found?'<span class="chip chip-g">Found</span>':'<span class="chip chip-r">Not found</span>'}</span></div>
+      <div class="info-row"><span class="ir-l">Uptime</span><span class="ir-v">${fmtUptime(s.uptime_s)}</span></div>
+    </div>`;
+  }
+}
+
+function renderAll(){
+  renderDash();renderEvents();renderEmployees();renderCards();renderAdmins();renderDevice();
+  const n=S.events.filter(e=>!e.synced).length;
+  const nb=document.getElementById('nb');if(nb){nb.textContent=n;nb.style.display=n>0?'':'none';}
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function renderDash(){
+  const todayStart=new Date();todayStart.setHours(0,0,0,0);
+  const todayEvs=S.events.filter(e=>{try{return new Date(e.ts)>=todayStart;}catch{return false;}});
+  document.getElementById('m-emp').textContent=S.employees.length||'—';
+  document.getElementById('m-today').textContent=todayEvs.length;
+  document.getElementById('m-denied').textContent=S.events.filter(e=>e.decision==='denied').length;
+  const de=document.getElementById('dash-events');
+  de.innerHTML=S.events.slice(0,8).map(e=>`
+    <div class="ev-row">
+      <span class="dot ${e.decision==='granted'?'dot-g':'dot-r'}"></span>
+      <span class="ev-name">${e.name||'Unknown'}</span>
+      <span class="badge ${e.dir==='in'?'b-in':'b-out'}">${(e.dir||'').toUpperCase()}</span>
+      <span style="color:var(--hint);font-size:11px;white-space:nowrap">${fmtTsLocal(e.ts)}</span>
+    </div>`).join('')||'<div style="padding:20px;text-align:center;font-size:12px;color:var(--hint)">No events yet</div>';
+  const seen={};
+  [...S.events].sort((a,b)=>{try{return new Date(b.ts)-new Date(a.ts);}catch{return 0;}})
+    .forEach(e=>{if(e.name&&!(e.name in seen))seen[e.name]=e.dir;});
+  const inList=Object.entries(seen).filter(([,d])=>d==='in').map(([n])=>n);
+  document.getElementById('whos-count').textContent=inList.length+' inside';
+  document.getElementById('whos-in').innerHTML=inList.length?
+    inList.slice(0,8).map(n=>`<div class="ev-row">${av(n)}<span class="ev-name" style="margin-left:6px">${n}</span><span style="font-size:10px;color:var(--green-tx)">● In</span></div>`).join(''):
+    '<div style="padding:20px;text-align:center;font-size:12px;color:var(--hint)">No one checked in</div>';
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+function renderEvents(){
+  const q=(document.getElementById('ev-q')?.value||'').toLowerCase();
+  const d=document.getElementById('ev-dir')?.value||'';
+  const dec=document.getElementById('ev-dec')?.value||'';
+  const syn=document.getElementById('ev-syn')?.value||'';
+  const rows=S.events.filter(e=>(!q||(e.name||'').toLowerCase().includes(q)||(e.uid||'').toLowerCase().includes(q))&&(!d||e.dir===d)&&(!dec||e.decision===dec)&&(!syn||String(e.synced)===syn));
+  const b=document.getElementById('ev-body');if(!b)return;
+  b.innerHTML=rows.length?rows.map(e=>`
+    <tr>
+      <td><div style="display:flex;align-items:center;gap:7px">${av(e.name||'?')}<span>${e.name||'Unknown'}</span></div></td>
+      <td><span class="badge ${e.dir==='in'?'b-in':'b-out'}">${(e.dir||'?').toUpperCase()}</span></td>
+      <td><span class="badge ${e.decision==='granted'?'b-granted':'b-denied'}">${e.decision||'—'}</span></td>
+      <td class="hide-xs"><span class="badge ${e.synced?'b-synced':'b-pending'}">${e.synced?'Synced':'Local'}</span></td>
+      <td style="color:var(--muted);font-size:11px;white-space:nowrap">${fmtTsLocal(e.ts)}</td>
+    </tr>`).join(''):
+    '<tr class="empty-row"><td colspan="5">No events match filter</td></tr>';
+}
+
+// ── Employees ─────────────────────────────────────────────────────────────────
+function renderEmployees(){
+  const q=(document.getElementById('emp-q')?.value||'').toLowerCase();
+  const st=document.getElementById('emp-st')?.value||'';
+  const rows=S.employees.filter(e=>(!q||((e.first_name||'')+' '+(e.last_name||'')).toLowerCase().includes(q)||(e.department||'').toLowerCase().includes(q))&&(!st||e.status===st));
+  const b=document.getElementById('emp-body');if(!b)return;
+  b.innerHTML=rows.length?rows.map(e=>{
+    const name=(e.first_name||'')+' '+(e.last_name||'');
+    return`<tr>
+      <td><div style="display:flex;align-items:center;gap:7px">${av(name)}<div><div style="font-weight:500">${name}</div>${e.email?`<div style="font-size:11px;color:var(--muted)">${e.email}</div>`:''}</div></div></td>
+      <td class="hide-xs" style="color:var(--muted);font-size:12px"><div>${e.department||'—'}</div>${e.position?`<div style="font-size:11px;color:var(--hint)">${e.position}</div>`:''}</td>
+      <td style="color:var(--muted)">${(e.cards||[]).length}</td>
+      <td><span class="badge ${(e.status||'active')==='active'?'b-active':'b-inactive'}">${e.status||'active'}</span></td>
+      <td><span class="badge ${(e.synced!==false)?'b-synced':'b-pending'}">${(e.synced!==false)?'Synced':'Local'}</span></td>
+      <td style="display:flex;gap:4px">
+        <button class="btn-icon" title="Add card" onclick="openAddCard('${e.local_id||''}')" style="font-size:15px">🪪</button>
+        <button class="btn-icon" title="Edit" onclick="openEditEmployeeById('${(e.local_id||'').replace(/'/g,'')}')">✎</button>
+        <button class="btn-icon" title="Delete" onclick="confirmDeleteEmployee('${e.local_id||''}','${(e.first_name||'')+' '+(e.last_name||'')}')" style="color:var(--red-tx)">🗑</button>
+      </td>
+    </tr>`;}).join(''):
+    '<tr class="empty-row"><td colspan="6">No employees found</td></tr>';
+}
+
+// ── Cards ─────────────────────────────────────────────────────────────────────
+function renderCards(){
+  const q=(document.getElementById('card-q')?.value||'').toLowerCase();
+  const st=document.getElementById('card-st')?.value||'';
+  const rows=S.cards.filter(c=>(!q||(c.uid||'').toLowerCase().includes(q)||(c.employee||'').toLowerCase().includes(q))&&(!st||c.status===st));
+  const b=document.getElementById('card-body');if(!b)return;
+  b.innerHTML=rows.length?rows.map(c=>`
+    <tr>
+      <td style="font-family:ui-monospace,monospace;font-size:11px">${c.uid}</td>
+      <td style="color:var(--muted)">${c.label||'—'}</td>
+      <td>${c.employee||'—'}</td>
+      <td class="hide-xs" style="color:var(--muted);font-size:11px">${c.type||'mifare_uid'}</td>
+      <td><span class="badge ${c.status==='active'?'b-active':c.status==='lost'?'b-lost':'b-inactive'}">${c.status}</span></td>
+    </tr>`).join(''):
+    '<tr class="empty-row"><td colspan="5">No cards found</td></tr>';
+}
+
+// ── Admins ────────────────────────────────────────────────────────────────────
+function renderAdmins(){
+  const b=document.getElementById('admin-body');if(!b)return;
+  b.innerHTML=S.admins.length?S.admins.map(a=>`
+    <tr>
+      <td style="font-weight:500">${a.username}</td>
+      <td><span class="badge ${a.role==='super_admin'?'b-super':'b-active'}">${a.role==='super_admin'?'Super Admin':'Admin'}</span></td>
+      <td><span class="badge ${a.must_change_password?'b-pending':'b-synced'}">${a.must_change_password?'Must change pwd':'Active'}</span></td>
+      <td style="display:flex;gap:4px">
+        <button class="btn-icon" title="Reset password" onclick="promptResetPassword('${a.username}')">🔑</button>
+        <button class="btn-icon" title="Delete" onclick="deleteAdmin('${a.username}')">🗑</button>
+      </td>
+    </tr>`).join(''):
+    '<tr class="empty-row"><td colspan="4">No admins found</td></tr>';
+}
+
+// ── Device ────────────────────────────────────────────────────────────────────
+function renderDevice(){
+  const s=S.status;const el=document.getElementById('device-body');if(!el||!s)return;
+  el.innerHTML=`
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;gap:12px;flex-wrap:wrap">
+        <div><div style="font-size:15px;font-weight:600">${s.identifier||'Device'}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">v${s.firmware||'?'} · ${s.ip||'—'}</div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="badge ${s.sd_mounted?'b-active':'b-denied'}">${s.sd_mounted?'SD OK':'No SD'}</span>
+          <span class="badge ${s.ntp_synced?'b-active':'b-pending'}">${s.ntp_synced?'NTP OK':'No NTP'}</span>
+        </div>
+      </div>
+      <div class="dg">
+        <div class="dg-l">Server</div><div class="dg-v">${s.server_url||'Not set'}</div>
+        <div class="dg-l">CS IN/OUT</div><div class="dg-v">GPIO ${s.cs_in} / ${s.cs_out}</div>
+        <div class="dg-l">CS SD</div><div class="dg-v">GPIO ${s.cs_sd}</div>
+        <div class="dg-l">Relay</div><div class="dg-v">GPIO ${s.relay_pin} · ${s.relay_ms}ms</div>
+        <div class="dg-l">SD</div><div class="dg-v">${s.sd_used_mb||0}/${s.sd_total_mb||0} MB</div>
+        <div class="dg-l">Employees</div><div class="dg-v">${s.employee_count||0}</div>
+        <div class="dg-l">Unsynced</div><div class="dg-v">${s.unsynced_events||0} events</div>
+        <div class="dg-l">Uptime</div><div class="dg-v">${fmtUptime(s.uptime_s)}</div>
+        <div class="dg-l">Time</div><div class="dg-v">${fmtTsLocal(s.current_time)}</div>
+        <div class="dg-l">RSSI</div><div class="dg-v">${s.rssi||'—'} dBm</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="doOpen()">🔓 Test relay</button>
+        <button class="btn btn-sm btn-primary" onclick="forceSync()">↻ Sync</button>
+      </div>
+    </div>`;
+}
+
+// ── Setup actions ─────────────────────────────────────────────────────────────
+async function saveServerConfig(){
+  const sv=document.getElementById('f-server').value.trim();
+  const tk=document.getElementById('f-token').value.trim();
+  if(!sv){toast('Enter server URL');return;}
+  const btn=document.getElementById('btn-save-srv');btn.disabled=true;btn.textContent='Saving…';
+  const body={server_url:sv};if(tk)body.device_token=tk;
+  const r=await lpost('/api/config',body);
+  btn.disabled=false;btn.textContent='Save & test connection';
+  if(r?.ok){toast('Saved ✓');document.getElementById('f-token').value='';setTimeout(loadAll,600);}
+  else toast('Error: '+(r?.error||'failed'));
+}
+async function saveHwConfig(){
+  const body={};
+  const fields=[['f-csin','cs_in'],['f-csout','cs_out'],['f-cssd','cs_sd'],['f-relay','relay_pin'],['f-relayms','relay_ms']];
+  fields.forEach(([id,key])=>{const v=document.getElementById(id)?.value;if(v)body[key]=parseInt(v);});
+  body.active_low=document.getElementById('f-activelow')?.checked||false;
+  const btn=document.getElementById('btn-save-hw');btn.disabled=true;btn.textContent='Saving…';
+  const r=await lpost('/api/config',body);
+  btn.disabled=false;btn.textContent='Save hardware config';
+  r?.ok?toast('Saved — reboot to apply ✓'):toast('Error: '+(r?.error||'failed'));
+}
+async function doOpen(){const r=await fetch('/api/open',{method:'POST',headers:headers()});toast(r.ok?'Relay triggered ✓':'Failed');}
+async function doReset(type){
+  if(!confirm(type==='all'?'Factory reset — erase all settings?':'Reset WiFi credentials?'))return;
+  await fetch('/api/reset?type='+type,{method:'POST',headers:headers()});toast('Resetting…');
+}
+
+// ── Add employee ─────────────────────────────────────────────────────────────
+
+function openAddEmployee() {
+  _scannedUid = '';
+  _addEmpLocalId = '';
+  // Clear all fields
+  ['ef-uid','ef-label','ef-first','ef-last','ef-dept','ef-pos','ef-phone','ef-email','ef-extid'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  document.getElementById('ef-type').value='mifare_uid';
+  document.getElementById('emp-step1').style.display='';
+  document.getElementById('emp-step2').style.display='none';
+  document.getElementById('btn-step1-next').disabled=true;
+  hideErr('emp-err');
+  resetTapWidget();
+  document.getElementById('modal-emp').classList.add('show');
+  // Start listening for card scan immediately
+  startScanCapture();
+}
+
+function resetTapWidget() {
+  document.getElementById('tap-widget-area').innerHTML=`
+    <div class="tap-widget">
+      <div class="tap-icon">&#x1F4B3;</div>
+      <div class="tap-msg">Tap card on IN reader</div>
+      <div class="tap-sub">Waiting for scan&hellip;</div>
+      <div class="tap-timer" id="tap-countdown">&mdash;</div>
+    </div>`;
+}
+
+// User typed UID manually
+function onUidManualInput() {
+  const uid = document.getElementById('ef-uid').value.trim().toUpperCase();
+  _scannedUid = uid;
+  document.getElementById('btn-step1-next').disabled = uid.length < 4;
+  if (uid.length >= 4) {
+    document.getElementById('tap-widget-area').innerHTML=`
+      <div class="tap-ok">
+        <div style="font-size:20px">&#x2705;</div>
+        <div style="font-size:13px;font-weight:500;margin-top:4px">UID entered manually</div>
+        <div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);margin-top:2px">${uid}</div>
+      </div>`;
+  }
+}
+
+// Start polling the device for a card tap on IN reader
+async function startScanCapture() {
+  // Tell device to capture next tap as registration scan (no employee assigned yet)
+  // We use a special "scan_only" mode — just capture UID, don't assign to anyone
+  stopTapPoll();
+  await lpost('/api/employees/card', { local_id: '__scan__', label: '', type: 'mifare_uid' });
+  startTapCountdown(30);
+  startTapPoll(true); // scan-only mode
+}
+
+function startTapCountdown(sec) {
+  if (_countdown) clearInterval(_countdown);
+  let s = sec;
+  _countdown = setInterval(() => {
+    s--;
+    const el = document.getElementById('tap-countdown');
+    if (el) el.textContent = s > 0 ? s : '—';
+    if (s <= 0) { clearInterval(_countdown); _countdown = null; }
+  }, 1000);
+}
+
+// scanOnly=true: just capture UID and show it, don't create employee yet
+function startTapPoll(scanOnly=false) {
+  if (_tapPollIv) clearInterval(_tapPollIv);
+  _tapPollIv = setInterval(async () => {
+    const r = await lg('/api/employees/pending');
+    if (!r) return;
+
+    if (r.captured) {
+      stopTapPoll();
+      const uid = r.uid || '';
+      _scannedUid = uid;
+      document.getElementById('ef-uid').value = uid;
+      document.getElementById('btn-step1-next').disabled = false;
+      document.getElementById('tap-widget-area').innerHTML=`
+        <div class="tap-ok">
+          <div style="font-size:20px">&#x2705;</div>
+          <div style="font-size:13px;font-weight:500;margin-top:4px">Card scanned!</div>
+          <div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);margin-top:2px">${uid}</div>
+        </div>`;
+
+      if (!scanOnly) {
+        // Full assignment — employee already created
+        document.getElementById('btn-save-emp').style.display='';
+        document.getElementById('btn-save-emp').textContent='Done';
+        document.getElementById('btn-save-emp').onclick=()=>{closeModal('modal-emp');loadAll();};
+        await loadAll();
+      }
+    } else if (!r.pending && !r.captured) {
+      stopTapPoll();
+      document.getElementById('tap-countdown').textContent='—';
+    }
+  }, 600);
+}
+
+function stopTapPoll() {
+  if (_tapPollIv) { clearInterval(_tapPollIv); _tapPollIv = null; }
+  if (_countdown) { clearInterval(_countdown); _countdown = null; }
+}
+
+function goToStep2() {
+  const uid = document.getElementById('ef-uid').value.trim().toUpperCase();
+  if (uid.length < 4) { showErr('emp-err', 'Scan a card or enter UID first'); return; }
+  _scannedUid = uid;
+  stopTapPoll();
+  document.getElementById('step2-uid-display').textContent = uid;
+  document.getElementById('emp-step1').style.display='none';
+  document.getElementById('emp-step2').style.display='';
+  document.getElementById('ef-first').focus();
+}
+
+function goBackToStep1() {
+  document.getElementById('emp-step1').style.display='';
+  document.getElementById('emp-step2').style.display='none';
+  hideErr('emp-err');
+  // Restart scan
+  startScanCapture();
+}
+
+// Called from 🪪 button in employee row — assign card to existing employee
+function openAddCard(localId) {
+  _addEmpLocalId = localId;
+  _scannedUid = '';
+  document.getElementById('ef-uid').value = '';
+  document.getElementById('ef-label').value = '';
+  document.getElementById('ef-type').value = 'mifare_uid';
+  document.getElementById('emp-step1').style.display='';
+  document.getElementById('emp-step2').style.display='none';
+  document.getElementById('btn-step1-next').disabled = true;
+  resetTapWidget();
+  hideErr('emp-err');
+  document.getElementById('modal-emp').classList.add('show');
+  // Override next button for "assign card" mode
+  document.getElementById('btn-step1-next').textContent = 'Assign card';
+  document.getElementById('btn-step1-next').onclick = assignCardToEmployee;
+  startScanCapture();
+}
+
+async function assignCardToEmployee() {
+  const uid = document.getElementById('ef-uid').value.trim().toUpperCase();
+  if (!uid || !_addEmpLocalId) return;
+  const label = document.getElementById('ef-label').value.trim();
+  const type  = document.getElementById('ef-type').value;
+  const ok = await SdManager_addCard(_addEmpLocalId, uid, label, type);
+  if (ok) { toast('Card assigned ✓'); closeModal('modal-emp'); loadAll(); }
+  else toast('Error assigning card');
+}
+
+// Direct card assignment via local API
+async function SdManager_addCard(localId, uid, label, type) {
+  // We use the assign-card endpoint which writes directly to SD
+  // First start a capture session with this employee's localId
+  const r = await lpost('/api/employees/card', { local_id: localId, label, type });
+  // Then immediately resolve it with the already-known UID
+  // Since we have the UID from the scan, send it directly
+  const r2 = await lpost('/api/employees/card/assign', { local_id: localId, uid, label, type });
+  return r2?.ok;
+}
+
+function validatePhone(input) {
+  const val = input.value.trim();
+  const err = document.getElementById('ef-phone-err');
+  if (!val) { input.classList.remove('invalid','valid'); if(err){err.classList.remove('show');} return true; }
+  const valid = /^[+0-9\s\-()\.]+$/.test(val) && val.replace(/\D/g,'').length >= 6;
+  input.classList.toggle('invalid', !valid);
+  input.classList.toggle('valid', valid);
+  if (err) { err.textContent = valid ? '' : 'Invalid phone number'; err.classList.toggle('show', !valid); }
+  return valid;
+}
+
+function validateEmail(input) {
+  const val = input.value.trim();
+  const err = document.getElementById('ef-email-err');
+  if (!val) { input.classList.remove('invalid','valid'); if(err){err.classList.remove('show');} return true; }
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  input.classList.toggle('invalid', !valid);
+  input.classList.toggle('valid', valid);
+  if (err) { err.textContent = valid ? '' : 'Invalid email address'; err.classList.toggle('show', !valid); }
+  return valid;
+}
+
+function validateName(input) {
+  const val = input.value.trim();
+  const valid = val.length === 0 || /^[a-zA-ZÀ-ÿ\s'-]+$/.test(val);
+  input.classList.toggle('invalid', !valid);
+  input.classList.toggle('valid', val.length > 0 && valid);
+  return valid;
+}
+
+async function saveEmployee() {
+  const first = document.getElementById('ef-first').value.trim();
+  const last  = document.getElementById('ef-last').value.trim();
+  hideErr('emp-err');
+  if (!first && !last) { showErr('emp-err', 'First or last name required'); return; }
+
+  // Validate fields before saving
+  const phoneOk = validatePhone(document.getElementById('ef-phone'));
+  const emailOk = validateEmail(document.getElementById('ef-email'));
+  if (!phoneOk || !emailOk) { showErr('emp-err', 'Please fix the errors above'); return; }
+
+  const btn = document.getElementById('btn-save-emp');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  const res = await lpost('/api/employees', {
+    first_name:  first,
+    last_name:   last,
+    department:  document.getElementById('ef-dept').value.trim(),
+    position:    document.getElementById('ef-pos').value.trim(),
+    phone:       document.getElementById('ef-phone').value.trim(),
+    email:       document.getElementById('ef-email').value.trim(),
+    card_uid:    _scannedUid,
+    card_label:  document.getElementById('ef-label').value.trim(),
+    card_type:   document.getElementById('ef-type').value,
+  });
+
+  btn.disabled = false;
+  if (res?.ok) {
+    toast('Employee created ✓');
+    closeModal('modal-emp');
+    await loadAll();
+  } else {
+    showErr('emp-err', res?.error || 'Save failed');
+    btn.textContent = 'Create employee';
+  }
+}
+
+// ── Timezone ─────────────────────────────────────────────────────────────────
+function saveTz() {
+  const tz = document.getElementById('f-tz')?.value;
+  if (!tz) return;
+  localStorage.setItem('cp_tz', tz);
+  lpost('/api/config', { timezone: tz }).then(r => {
+    if (r?.ok) toast('Timezone saved ✓');
+  });
+}
+
+function applyStoredTz() {
+  const tz = localStorage.getItem('cp_tz') || 'Asia/Tbilisi';
+  const el = document.getElementById('f-tz');
+  if (el) el.value = tz;
+}
+
+// Override fmtTs to use stored timezone
+function fmtTsLocal(ts) {
+  if (!ts) return '—';
+  const s = String(ts);
+  if (s.startsWith('~')) return 'boot+' + s.slice(1);
+  if (s.includes('T') && s.includes(':')) {
+    try {
+      const tz = localStorage.getItem('cp_tz') || 'Asia/Tbilisi';
+      const d = new Date(ts);
+      if (!isNaN(d)) {
+        const today = new Date();
+        const opts = { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false };
+        const dateOpts = { timeZone: tz, day: '2-digit', month: '2-digit' };
+        const todayStr = today.toLocaleDateString('en-GB', { timeZone: tz });
+        const dStr = d.toLocaleDateString('en-GB', { timeZone: tz });
+        if (todayStr === dStr) return d.toLocaleTimeString('en-GB', opts);
+        return d.toLocaleDateString('en-GB', dateOpts) + ' ' + d.toLocaleTimeString('en-GB', opts);
+      }
+    } catch {}
+  }
+  return ts;
+}
+
+// ── Reader swap ───────────────────────────────────────────────────────────────
+function confirmSwapReaders() {
+  const csIn  = S.status?.cs_in  ?? '?';
+  const csOut = S.status?.cs_out ?? '?';
+  if (!confirm(
+    `Swap IN and OUT readers?
+
+Current:
+  IN  → GPIO ${csIn}
+  OUT → GPIO ${csOut}
+
+After swap:
+  IN  → GPIO ${csOut}
+  OUT → GPIO ${csIn}
+
+Device will save new config. Card readers will swap roles immediately.`
+  )) return;
+  const newIn  = S.status?.cs_out;
+  const newOut = S.status?.cs_in;
+  lpost('/api/config', { cs_in: newIn, cs_out: newOut }).then(r => {
+    if (r?.ok) {
+      toast('Readers swapped ✓ — reboot to apply');
+      setTimeout(() => loadAll(), 800);
+    } else toast('Error: ' + (r?.error || 'failed'));
+  });
+}
+
+// ── Edit employee ─────────────────────────────────────────────────────────────
+let _editEmpLocalId = '';
+
+// Look up employee by local_id and open edit modal
+function openEditEmployeeById(localId) {
+  const emp = S.employees.find(e => e.local_id === localId);
+  if (!emp) { toast('Employee not found'); return; }
+  openEditEmployee(emp);
+}
+
+function openEditEmployee(emp) {
+  _editEmpLocalId = emp.local_id || '';
+  document.getElementById('ee-first').value  = emp.first_name || '';
+  document.getElementById('ee-last').value   = emp.last_name  || '';
+  document.getElementById('ee-dept').value   = emp.department || '';
+  document.getElementById('ee-pos').value    = emp.position   || '';
+  document.getElementById('ee-phone').value  = emp.phone      || '';
+  document.getElementById('ee-email').value  = emp.email      || '';
+  document.getElementById('ee-status').value = emp.status     || 'active';
+  // Clear validation states
+  ['ee-first','ee-last','ee-dept','ee-pos','ee-phone','ee-email'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('invalid','valid');
+  });
+  ['ee-phone-err','ee-email-err'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('show');
+  });
+  hideErr('edit-emp-err');
+  document.getElementById('modal-edit-emp').classList.add('show');
+}
+
+async function saveEditEmployee() {
+  const first = document.getElementById('ee-first').value.trim();
+  const last  = document.getElementById('ee-last').value.trim();
+  hideErr('edit-emp-err');
+  if (!first && !last) { showErr('edit-emp-err', 'First or last name required'); return; }
+  if (!validatePhone(document.getElementById('ee-phone'))) { showErr('edit-emp-err', 'Fix phone number'); return; }
+  if (!validateEmail(document.getElementById('ee-email'))) { showErr('edit-emp-err', 'Fix email address'); return; }
+
+  const r = await lpost('/api/employees/update', {
+    local_id:   _editEmpLocalId,
+    first_name: first,
+    last_name:  last,
+    department: document.getElementById('ee-dept').value.trim(),
+    position:   document.getElementById('ee-pos').value.trim(),
+    phone:      document.getElementById('ee-phone').value.trim(),
+    email:      document.getElementById('ee-email').value.trim(),
+    status:     document.getElementById('ee-status').value,
+  });
+  if (r?.ok) { toast('Employee updated ✓'); closeModal('modal-edit-emp'); await loadAll(); }
+  else showErr('edit-emp-err', r?.error || 'Save failed');
+}
+
+function confirmDeleteEmployeeById(localId) {
+  const emp = S.employees.find(e => e.local_id === localId);
+  const name = emp ? (emp.first_name||'') + ' ' + (emp.last_name||'') : localId;
+  confirmDeleteEmployee(localId, name);
+}
+
+function confirmDeleteEmployee(localId, name) {
+  if (!confirm(`Delete employee "${name.trim()}"?
+
+This will remove them from the local whitelist. They will no longer be able to access the door.
+
+This action cannot be undone.`)) return;
+  deleteEmployee(localId, name);
+}
+
+async function deleteEmployee(localId, name) {
+  const r = await lpost('/api/employees/delete', { local_id: localId });
+  if (r?.ok) { toast(`${name.trim()} deleted`); await loadAll(); }
+  else toast('Error: ' + (r?.error || 'failed'));
+}
+
+// ── Admin management ──────────────────────────────────────────────────────────
+function openAddAdmin(){
+  document.getElementById('af-user').value='';document.getElementById('af-pass').value='';
+  document.getElementById('af-role').value='admin';hideErr('admin-err');
+  document.getElementById('modal-admin').classList.add('show');
+}
+async function saveAdmin(){
+  const user=document.getElementById('af-user').value.trim();
+  const pass=document.getElementById('af-pass').value;
+  const role=document.getElementById('af-role').value;
+  hideErr('admin-err');
+  if(user.length<3){showErr('admin-err','Username min 3 chars');return;}
+  if(pass.length<8){showErr('admin-err','Password min 8 chars');return;}
+  const r=await lpost('/api/admins',{username:user,password:pass,role});
+  if(r?.ok){toast('Admin created ✓');closeModal('modal-admin');await loadAll();}
+  else showErr('admin-err',r?.error||'Failed');
+}
+async function deleteAdmin(username){
+  if(!confirm(`Delete admin "${username}"?`))return;
+  const r=await api('DELETE','/api/admins',{username});
+  if(r?.ok)toast('Deleted');else toast('Error: '+(r?.data?.error||'failed'));
+  await loadAll();
+}
+async function promptResetPassword(username){
+  const np=prompt(`New password for "${username}":`);
+  if(!np||np.length<8){toast('Min 8 chars');return;}
+  const r=await lpost('/api/admins/reset-password',{username,new_password:np});
+  r?.ok?toast('Password reset. User must change on next login.'):toast('Error: '+(r?.error||'failed'));
+}
+
+// ── Change password modal ─────────────────────────────────────────────────────
+function openChangePassword(){
+  document.getElementById('chp-old').value='';document.getElementById('chp-new').value='';
+  document.getElementById('chp-conf').value='';hideErr('chpass-err');
+  document.getElementById('modal-chpass').classList.add('show');
+}
+async function submitChangePassword(){
+  const old=document.getElementById('chp-old').value;
+  const nw=document.getElementById('chp-new').value;
+  const conf=document.getElementById('chp-conf').value;
+  hideErr('chpass-err');
+  if(nw!==conf){showErr('chpass-err','Passwords do not match');return;}
+  if(nw.length<8){showErr('chpass-err','Min 8 chars');return;}
+  const r=await lpost('/api/auth/change-password',{old_password:old,new_password:nw});
+  if(r?.ok){toast('Password changed ✓');closeModal('modal-chpass');}
+  else showErr('chpass-err',r?.error||'Failed');
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+function exportCsv(){
+  const csv='timestamp,name,uid,direction,decision,sync\n'+S.events.map(e=>[e.ts,e.name||'',e.uid||'',e.dir||'',e.decision||'',e.synced?'synced':'local'].join(',')).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='inout-events-'+Date.now()+'.csv';a.click();
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+const TITLES={dashboard:'Dashboard',events:'Events',employees:'Employees',cards:'Cards',admins:'Admin accounts',setup:'Device setup',devices:'Device info'};
+function nav(page,btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+page)?.classList.add('active');
+  document.getElementById('page-title').textContent=TITLES[page]||page;
+  if(btn)btn.classList.add('active');
+  else document.querySelectorAll('.ni').forEach(n=>{if(n.textContent.trim().toLowerCase().startsWith(page.slice(0,5)))n.classList.add('active');});
+  if(page==='events'){const nb=document.getElementById('nb');if(nb)nb.style.display='none';}
+  closeSidebar();
+}
+function closeModal(id){document.getElementById(id).classList.remove('show');}
+function openSidebar(){document.getElementById('sidebar').classList.add('open');document.getElementById('overlay').classList.add('show');document.body.style.overflow='hidden';}
+function closeSidebar(){document.getElementById('sidebar').classList.remove('open');document.getElementById('overlay').classList.remove('show');document.body.style.overflow='';}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+// Auto-login if token exists, otherwise show login screen
+if(TOKEN){
+  fetch('/api/auth/me',{headers:headers()}).then(r=>{
+    if(r.ok)return r.json();throw new Error('auth');
+  }).then(d=>{
+    ROLE=d.role;USER=d.username;
+    localStorage.setItem('cp_role',ROLE);localStorage.setItem('cp_user',USER);
+    document.getElementById('login-screen').style.display='none';
+    showApp();
+  }).catch(()=>{
+    TOKEN='';ROLE='';USER='';
+    localStorage.removeItem('cp_token');
+    localStorage.removeItem('cp_role');
+    localStorage.removeItem('cp_user');
+    document.getElementById('login-screen').style.display='flex';
+  });
+} else {
+  document.getElementById('login-screen').style.display='flex';
+}
+
+setInterval(()=>lg('/api/local/events?limit=300').then(d=>{if(d?.events){S.events=d.events;renderDash();renderEvents();renderAll();}}),10000);
+setInterval(syncServer,60000);
+setInterval(()=>lg('/api/local/status').then(d=>{if(d){S.status=d;applyStatus(d);renderDevice();}}),15000);
+</script>
+</body>
+</html>
