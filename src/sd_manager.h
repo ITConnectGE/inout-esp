@@ -64,7 +64,7 @@ public:
         }
         Serial.printf("[SD] OK  %lluMB  type=%d\n",
                       SD.cardSize()/(1024*1024), SD.cardType());
-        mkdirP("/data"); mkdirP("/www");
+        mkdirP("/data"); mkdirP("/www"); mkdirP("/photos");
         if (!SD.exists(EMPLOYEES_FILE)) {
             File f = SD.open(EMPLOYEES_FILE, FILE_WRITE);
             if (f) { f.print("{\"employees\":[],\"updated_at\":0}"); f.close(); }
@@ -360,6 +360,27 @@ public:
         if (!f || f.isDirectory()) { if(f)f.close(); return false; }
         server.sendHeader("Cache-Control", "max-age=60");
         server.streamFile(f, mime(path)); f.close(); return true;
+    }
+
+    // Save a JPEG from ESP32-CAM; path: /photos/<uid>_<YYYYMMDD_HHMMSS>.jpg
+    bool savePhoto(const String& uid, const uint8_t* data, size_t len) {
+        if (!_mounted || len == 0) return false;
+        char path[72];
+        struct tm t;
+        if (getLocalTime(&t, 50))
+            snprintf(path, sizeof(path), "/photos/%s_%04d%02d%02d_%02d%02d%02d.jpg",
+                     uid.c_str(),
+                     t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                     t.tm_hour, t.tm_min, t.tm_sec);
+        else
+            snprintf(path, sizeof(path), "/photos/%s_%lu.jpg", uid.c_str(), millis());
+
+        File f = SD.open(path, FILE_WRITE);
+        if (!f) return false;
+        size_t written = f.write(data, len);
+        f.close();
+        Serial.printf("[SD] Photo: %s  (%u bytes)\n", path, written);
+        return written == len;
     }
 
     String resolveAdminPath(const String& uri) {

@@ -433,6 +433,70 @@ private:
         String body; serializeJson(resp, body); jsend(200, body);
     }
 
+    // ── GET /api/photos ───────────────────────────────────────────────────────
+    void handleListPhotos() {
+        Session s; if (!requireAuth(s)) return;
+        if (!SdManager.isMounted()) { jsend(200, "{\"photos\":[]}"); return; }
+
+        // Build UID→name map from employees (read once)
+        JsonDocument uidMap;
+        if (SD.exists(EMPLOYEES_FILE)) {
+            File ef = SD.open(EMPLOYEES_FILE, FILE_READ);
+            if (ef) {
+                JsonDocument empDoc;
+                if (!deserializeJson(empDoc, ef)) {
+                    for (JsonObject emp : empDoc["employees"].as<JsonArray>()) {
+                        String name = String(emp["first_name"]|"") + " " + String(emp["last_name"]|"");
+                        name.trim();
+                        for (JsonObject card : emp["cards"].as<JsonArray>()) {
+                            String uid = String(card["uid"] | "");
+                            uid.toUpperCase();
+                            if (uid.length()) uidMap[uid] = name;
+                        }
+                    }
+                }
+                ef.close();
+            }
+        }
+
+        String out = "{\"photos\":[";
+        bool first = true;
+        File dir = SD.open("/photos");
+        if (dir && dir.isDirectory()) {
+            File entry;
+            while ((entry = dir.openNextFile())) {
+                if (entry.isDirectory()) { entry.close(); continue; }
+                String fname = String(entry.name());
+                entry.close();
+                int slash = fname.lastIndexOf('/');
+                if (slash >= 0) fname = fname.substring(slash + 1);
+                if (!fname.endsWith(".jpg")) continue;
+
+                // Filename: <UID>_<YYYYMMDD>_<HHMMSS>.jpg
+                int us = fname.indexOf('_');
+                String uid = us > 0 ? fname.substring(0, us) : fname;
+                String name = uidMap[uid].as<String>();
+
+                // Rebuild human timestamp from filename parts
+                String ts = "";
+                if (us > 0 && (int)fname.length() >= us + 16) {
+                    String rest = fname.substring(us + 1);
+                    if (rest.length() >= 15)
+                        ts = rest.substring(0,4)+"-"+rest.substring(4,6)+"-"+rest.substring(6,8)
+                           +" "+rest.substring(9,11)+":"+rest.substring(11,13)+":"+rest.substring(13,15);
+                }
+
+                if (!first) out += ",";
+                first = false;
+                String safeName = name; safeName.replace("\"", "\\\"");
+                out += "{\"file\":\""+fname+"\",\"uid\":\""+uid+"\",\"name\":\""+safeName+"\",\"ts\":\""+ts+"\"}";
+            }
+            dir.close();
+        }
+        out += "]}";
+        jsend(200, out);
+    }
+
     // ── GET / and /admin ──────────────────────────────────────────────────────
     void handleRoot() {
         // Try SD first (combined login+admin page)
@@ -550,6 +614,7 @@ public:
         _server.on("/api/employees/card",        HTTP_POST,   [this]{ handleAssignCard(); });
         _server.on("/api/employees/card/assign", HTTP_POST,   [this]{ handleDirectAssignCard(); });
         _server.on("/api/employees/pending", HTTP_GET,    [this]{ handlePendingTap(); });
+        _server.on("/api/photos",            HTTP_GET,    [this]{ handleListPhotos(); });
 
         _server.onNotFound([this]{
             const String& uri = _server.uri();
@@ -558,6 +623,17 @@ public:
             if (uri.startsWith("/api/local/events"))  { handleLocalEvents();    return; }
             if (uri=="/api/local/status")             { handleStatus();         return; }
             if (uri.startsWith("/api/proxy/"))        { handleProxy();          return; }
+            // Serve photos — auth required (token via header or ?token= query param)
+            if (uri.startsWith("/photos/") && uri.length() > 8) {
+                Session ps;
+                if (!AuthManager.validate(getToken(), ps)) {
+                    cors(); _server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+                    return;
+                }
+                if (SdManager.isMounted() && SdManager.serveFile(_server, uri)) return;
+                _server.send(404, "text/plain", "Photo not found");
+                return;
+            }
             // Serve any SD www file (JS, CSS, icons etc)
             if (SdManager.isMounted()) {
                 String sdPath = "/www" + uri;

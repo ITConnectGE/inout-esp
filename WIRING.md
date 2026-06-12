@@ -32,6 +32,16 @@
 | LED2   | 13   |
 | LED3   | 12   |
 
+## UART2 — ESP32-CAM (AI-Thinker)
+| Signal        | Main ESP32 GPIO | CAM GPIO | Notes              |
+|---------------|-----------------|----------|--------------------|
+| TX (main→cam) | 32              | 3        | UART0 RX on CAM    |
+| RX (main←cam) | 34              | 1        | UART0 TX on CAM    |
+| GND           | GND             | GND      |                    |
+
+> To flash the CAM: connect FTDI TX→GPIO3, RX→GPIO1, pull GPIO0 to GND
+> on power-on, release after upload, then reset.
+
 ## PN532 SPI mode: SEL0=GND, SEL1=GND
 
 ## Flash

@@ -243,6 +243,16 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
 .toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 
 @media(max-width:500px){.hide-xs{display:none}tbody td,thead th{padding:8px 10px}}
+
+/* Photos */
+.photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:2px}
+.photo-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rsm);overflow:hidden;cursor:pointer;transition:box-shadow .15s}
+.photo-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.12)}
+.photo-card img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:var(--s3);min-height:60px}
+.photo-meta{padding:8px 10px}
+.photo-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.photo-uid{font-size:10px;color:var(--hint);font-family:ui-monospace,monospace;margin-top:1px}
+.photo-ts{font-size:11px;color:var(--muted);margin-top:2px}
 </style>
 </head>
 <body>
@@ -507,6 +517,20 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
         <!-- Devices -->
         <div class="page" id="page-devices">
           <div id="device-body"></div>
+        </div>
+
+        <!-- Photos -->
+        <div class="page" id="page-photos">
+          <div class="card" style="margin-bottom:14px">
+            <div class="card-hd">
+              <h2>Photos</h2>
+              <button class="btn btn-sm" onclick="loadPhotos()">Refresh</button>
+            </div>
+            <div class="toolbar">
+              <input type="text" id="photo-q" placeholder="Name or UID…" oninput="renderPhotos()">
+            </div>
+          </div>
+          <div id="photo-grid-wrap"></div>
         </div>
 
       </div>
@@ -809,6 +833,9 @@ function buildNav(){
     <button class="ni" onclick="nav('cards',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>Cards
     </button>
+    <button class="ni" onclick="nav('photos',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Photos
+    </button>
     ${isSuperAdmin?`
     <div class="nav-sep">Admin</div>
     <button class="ni" onclick="nav('admins',this)">
@@ -824,10 +851,11 @@ function buildNav(){
 
 // ── Load data ─────────────────────────────────────────────────────────────────
 async function loadAll(){
-  const[st,emps,evs]=await Promise.all([
+  const[st,emps,evs,photos]=await Promise.all([
     lg('/api/local/status'),
     lg('/api/local/employees'),
     lg('/api/local/events?limit=300'),
+    lg('/api/photos'),
   ]);
   if(st){S.status=st;applyStatus(st);}
   if(emps?.employees){
@@ -837,6 +865,7 @@ async function loadAll(){
         S.cards.push({uid:c.uid,label:c.label,employee:(e.first_name||'')+' '+(e.last_name||''),type:c.type,status:c.status});
   }
   if(evs?.events)S.events=evs.events;
+  if(photos?.photos)_photos=photos.photos;
   if(ROLE==='super_admin'){
     const admins=await lg('/api/admins');
     if(admins?.admins)S.admins=admins.admins;
@@ -900,7 +929,7 @@ function applyStatus(s){
 }
 
 function renderAll(){
-  renderDash();renderEvents();renderEmployees();renderCards();renderAdmins();renderDevice();
+  renderDash();renderEvents();renderEmployees();renderCards();renderAdmins();renderDevice();renderPhotos();
   const n=S.events.filter(e=>!e.synced).length;
   const nb=document.getElementById('nb');if(nb){nb.textContent=n;nb.style.display=n>0?'':'none';}
 }
@@ -1492,7 +1521,7 @@ function exportCsv(){
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
-const TITLES={dashboard:'Dashboard',events:'Events',employees:'Employees',cards:'Cards',admins:'Admin accounts',setup:'Device setup',devices:'Device info'};
+const TITLES={dashboard:'Dashboard',events:'Events',employees:'Employees',cards:'Cards',photos:'Photos',admins:'Admin accounts',setup:'Device setup',devices:'Device info'};
 function nav(page,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
@@ -1527,6 +1556,30 @@ if(TOKEN){
 } else {
   document.getElementById('login-screen').style.display='flex';
 }
+
+// ── Photos ────────────────────────────────────────────────────────────────────
+let _photos=[];
+async function loadPhotos(){const r=await lg('/api/photos');if(r?.photos){_photos=r.photos;renderPhotos();}}
+function renderPhotos(){
+  const q=(document.getElementById('photo-q')?.value||'').toLowerCase();
+  const wrap=document.getElementById('photo-grid-wrap');if(!wrap)return;
+  const filtered=_photos.filter(p=>!q||(p.name||'').toLowerCase().includes(q)||(p.uid||'').toLowerCase().includes(q));
+  if(!filtered.length){
+    wrap.innerHTML='<div style="text-align:center;padding:40px;color:var(--hint);font-size:13px">'+(_photos.length?'No photos match filter':'No photos yet — tap an authorised card to capture one')+'</div>';
+    return;
+  }
+  const sorted=[...filtered].sort((a,b)=>(b.ts||'').localeCompare(a.ts||''));
+  wrap.innerHTML='<div class="photo-grid">'+sorted.map(p=>`
+    <div class="photo-card" onclick="viewPhoto('${p.file}')">
+      <img src="/photos/${p.file}?token=${TOKEN}" alt="" loading="lazy" onerror="this.style.display='none'">
+      <div class="photo-meta">
+        <div class="photo-name">${p.name||'<span style="color:var(--hint)">Unknown</span>'}</div>
+        <div class="photo-uid">${p.uid}</div>
+        <div class="photo-ts">${p.ts||''}</div>
+      </div>
+    </div>`).join('')+'</div>';
+}
+function viewPhoto(file){window.open('/photos/'+file+'?token='+TOKEN,'_blank');}
 
 setInterval(()=>lg('/api/local/events?limit=300').then(d=>{if(d?.events){S.events=d.events;renderDash();renderEvents();renderAll();}}),10000);
 setInterval(syncServer,60000);

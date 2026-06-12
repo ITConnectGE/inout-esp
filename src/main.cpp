@@ -31,6 +31,7 @@
 #include "api_client.h"
 #include "lcd_display.h"
 #include "web_server.h"
+#include "cam_uart.h"
 
 SPIClass spiVSPI(VSPI);
 SPIClass spiHSPI(HSPI);
@@ -73,7 +74,7 @@ void handleTap(const String& uid, CardDirection dir) {
     ApiResponse r = ApiClient.processCard(uid, dir);
     digitalWrite(DEFAULT_LED3, HIGH);
     Lcd.showTap(r.granted, r.name);
-    if (r.granted) { feedbackGranted(); Relay.open(r.openMs); }
+    if (r.granted) { feedbackGranted(); Relay.open(r.openMs); CamUart.capture(uid); }
     else           { feedbackDenied(); }
     delay(40); digitalWrite(DEFAULT_LED3, LOW);
 }
@@ -180,7 +181,10 @@ void setup() {
     Serial.println("[TZ] " + Config.timezone + " → " + Config.getPosixTz());
     WebServerManager.begin();
 
-    // ── 9. Background tasks ───────────────────────────────────────────────────
+    // ── 9. ESP32-CAM on UART2 ────────────────────────────────────────────────
+    CamUart.begin();
+
+    // ── 10. Background tasks ──────────────────────────────────────────────────
     xTaskCreate(syncTask,      "sync",      8192, nullptr, 1, &hSync);
     xTaskCreate(heartbeatTask, "heartbeat", 4096, nullptr, 1, &hHeartbeat);
 
