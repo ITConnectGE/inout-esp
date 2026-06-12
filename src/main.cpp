@@ -200,6 +200,7 @@ void setup() {
 // ── Loop ─────────────────────────────────────────────────────────────────────
 void loop() {
     WebServerManager.loop();
+    Relay.loop();
     Lcd.loop();
     String uid;
     if (NfcReader.poll(READER_IN,  uid)) handleTap(uid, DIR_IN);
