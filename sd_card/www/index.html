@@ -878,8 +878,8 @@ async function loadAll(){
 
 async function syncServer(){
   try{
-    const r=await fetch('/api/proxy/admin/status',{headers:{'X-Session-Token':TOKEN}});
-    S.online=r.ok&&r.status!==503;
+    const r=await fetch('/api/proxy/device/sync',{headers:{'X-Session-Token':TOKEN}});
+    S.online=r.status!==503&&r.status!==0;
   }catch{S.online=false;}
   const chip=document.getElementById('chip');
   const bar=document.getElementById('offline-bar');
