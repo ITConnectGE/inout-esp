@@ -186,7 +186,7 @@ void setup() {
 
     // ── 10. Background tasks ──────────────────────────────────────────────────
     xTaskCreate(syncTask,      "sync",      8192, nullptr, 1, &hSync);
-    xTaskCreate(heartbeatTask, "heartbeat", 4096, nullptr, 1, &hHeartbeat);
+    xTaskCreate(heartbeatTask, "heartbeat", 8192, nullptr, 1, &hHeartbeat);
 
     feedbackBoot();
     Lcd.showReady();

@@ -17,6 +17,7 @@ struct ApiResponse {
 struct ApiClientClass {
 private:
     bool _ntpSynced = false;
+    SemaphoreHandle_t _mutex = nullptr;
 
     bool serverReachable() {
         return WiFi.status() == WL_CONNECTED
@@ -33,6 +34,7 @@ private:
 
 public:
     void begin() {
+        _mutex = xSemaphoreCreateRecursiveMutex();
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
         setenv("TZ", Config.getPosixTz().c_str(), 1);
         tzset();
@@ -44,7 +46,6 @@ public:
         struct tm t;
         bool synced = getLocalTime(&t, 500) && t.tm_year > 100;
         if (synced) {
-            // Re-apply timezone once NTP confirms sync
             setenv("TZ", Config.getPosixTz().c_str(), 1);
             tzset();
             _ntpSynced = true;
@@ -54,7 +55,6 @@ public:
         return _ntpSynced;
     }
 
-    // Returns ISO8601 UTC string, or millis fallback
     String nowIso() {
         struct tm t;
         if (!getLocalTime(&t, 100)) {
@@ -64,7 +64,6 @@ public:
         return buf;
     }
 
-    // Offline-first tap — SD whitelist + log
     ApiResponse processCard(const String& uid, CardDirection dir) {
         ApiResponse resp;
         resp.name    = SdManager.lookupUid(uid);
@@ -82,7 +81,6 @@ public:
         return resp;
     }
 
-    // Push unsynced events
     int syncEvents() {
         if (!serverReachable()) return -1;
         int n = SdManager.unsyncedCount();
@@ -91,48 +89,53 @@ public:
         JsonArray arr = doc["events"].to<JsonArray>();
         if (!SdManager.getUnsyncedEvents(arr, 50)) return 0;
         String body; serializeJson(doc, body);
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/events/batch");
         http.setTimeout(15000); auth(http);
         int code = http.POST(body); http.end();
+        xSemaphoreGiveRecursive(_mutex);
         if (code == 200 || code == 201) { SdManager.markAllSynced(); return n; }
         Serial.printf("[Sync] Events HTTP %d\n", code); return -1;
     }
 
-    // Push unsynced employees to server
     int syncEmployees() {
         if (!serverReachable()) return -1;
         JsonDocument doc;
         JsonArray arr = doc["employees"].to<JsonArray>();
         if (!SdManager.getUnsyncedEmployees(arr)) return 0;
         String body; serializeJson(doc, body);
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/employees/batch");
         http.setTimeout(15000); auth(http);
         int code = http.POST(body);
         if (code == 200 || code == 201) {
-            // Parse server-assigned IDs from response
             JsonDocument res;
             if (!deserializeJson(res, http.getString()))
                 if (res["ids"].is<JsonArray>())
                     SdManager.markEmployeesSynced(res["ids"].as<JsonArray>());
             http.end();
+            xSemaphoreGiveRecursive(_mutex);
             Serial.println("[Sync] Employees synced");
             return arr.size();
         }
         Serial.printf("[Sync] Employees HTTP %d\n", code);
-        http.end(); return -1;
+        http.end();
+        xSemaphoreGiveRecursive(_mutex);
+        return -1;
     }
 
-    // Pull whitelist + config from server
     bool syncWhitelist() {
         if (!serverReachable()) return false;
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return false;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/sync");
         http.setTimeout(15000); auth(http);
         int code = http.GET();
-        if (code != 200) { http.end(); return false; }
+        if (code != 200) { http.end(); xSemaphoreGiveRecursive(_mutex); return false; }
         String payload = http.getString(); http.end();
+        xSemaphoreGiveRecursive(_mutex);
         JsonDocument doc;
         if (!deserializeJson(doc, payload)) {
             if (!doc["relay_ms"].isNull())       Config.relayMs       = doc["relay_ms"];
@@ -146,6 +149,7 @@ public:
 
     void sendHeartbeat() {
         if (!serverReachable()) return;
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
@@ -159,18 +163,24 @@ public:
         doc["uptime_s"]        = millis()/1000;
         String body; serializeJson(doc, body);
         int code = http.POST(body);
+        bool resync = false;
         if (code == 200) {
             JsonDocument res;
             if (!deserializeJson(res, http.getString()))
-                if (res["resync"] | false) syncWhitelist();
+                resync = res["resync"] | false;
         }
         http.end();
+        xSemaphoreGiveRecursive(_mutex);
+        if (resync) syncWhitelist();
     }
 
     int proxy(const String& method, const String& path,
               const String& body, String& out) {
         if (!serverReachable()) {
             out = "{\"error\":\"device_offline\",\"offline\":true}"; return 503;
+        }
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
+            out = "{\"error\":\"busy\"}"; return 503;
         }
         HTTPClient http;
         http.begin(Config.serverUrl + path);
@@ -180,7 +190,9 @@ public:
         else if (method=="POST")   code = http.POST(body);
         else if (method=="PUT")    code = http.PUT(body);
         else if (method=="DELETE") code = http.sendRequest("DELETE");
-        else                       { out="{}"; return 405; }
-        out = http.getString(); http.end(); return code;
+        else                       { xSemaphoreGiveRecursive(_mutex); out="{}"; return 405; }
+        out = http.getString(); http.end();
+        xSemaphoreGiveRecursive(_mutex);
+        return code;
     }
 } ApiClient;
