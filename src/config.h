@@ -34,7 +34,7 @@
 
 // ── Other ─────────────────────────────────────────────────────────────────────
 #define DEFAULT_RELAY   26
-#define DEFAULT_BUZZ    27
+#define DEFAULT_BUZZ    15
 #define DEFAULT_LED1    14
 #define DEFAULT_LED2    13
 #define DEFAULT_LED3    12
