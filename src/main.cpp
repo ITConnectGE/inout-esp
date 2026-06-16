@@ -38,8 +38,7 @@ SPIClass spiHSPI(HSPI);
 
 bool _lcdFound = false;
 
-TaskHandle_t hHeartbeat = nullptr;
-TaskHandle_t hSync      = nullptr;
+TaskHandle_t hSync = nullptr;
 
 // ── Feedback ──────────────────────────────────────────────────────────────────
 void feedbackGranted() {
@@ -79,10 +78,9 @@ void handleTap(const String& uid, CardDirection dir) {
     delay(40); digitalWrite(DEFAULT_LED3, LOW);
 }
 
-// ── Sync task ─────────────────────────────────────────────────────────────────
+// ── Sync + heartbeat task ─────────────────────────────────────────────────────
 void syncTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(10000));
-    // Keep checking NTP until synced — re-applies timezone once confirmed
     for (int i = 0; i < 30 && !ApiClient.isNtpSynced(); i++) {
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -94,14 +92,6 @@ void syncTask(void*) {
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
-    }
-}
-
-// ── Heartbeat ─────────────────────────────────────────────────────────────────
-void heartbeatTask(void*) {
-    vTaskDelay(pdMS_TO_TICKS(20000));
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(30000));
         ApiClient.sendHeartbeat();
         Lcd.setFallback(WiFi.localIP().toString());
     }
@@ -185,8 +175,7 @@ void setup() {
     CamUart.begin();
 
     // ── 10. Background tasks ──────────────────────────────────────────────────
-    xTaskCreate(syncTask,      "sync",      8192, nullptr, 1, &hSync);
-    xTaskCreate(heartbeatTask, "heartbeat", 8192, nullptr, 1, &hHeartbeat);
+    xTaskCreate(syncTask, "sync", 8192, nullptr, 1, &hSync);
 
     feedbackBoot();
     Lcd.showReady();

@@ -92,7 +92,7 @@ public:
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/events/batch");
-        http.setTimeout(15000); auth(http);
+        http.setTimeout(8000); auth(http);
         int code = http.POST(body); http.end();
         xSemaphoreGiveRecursive(_mutex);
         if (code == 200 || code == 201) { SdManager.markAllSynced(); return n; }
@@ -108,7 +108,7 @@ public:
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/employees/batch");
-        http.setTimeout(15000); auth(http);
+        http.setTimeout(8000); auth(http);
         int code = http.POST(body);
         if (code == 200 || code == 201) {
             JsonDocument res;
@@ -131,7 +131,7 @@ public:
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return false;
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/sync");
-        http.setTimeout(15000); auth(http);
+        http.setTimeout(8000); auth(http);
         int code = http.GET();
         if (code != 200) { http.end(); xSemaphoreGiveRecursive(_mutex); return false; }
         String payload = http.getString(); http.end();
