@@ -301,6 +301,7 @@ private:
             // 2. Wipe all SD data including photos
             if (SdManager.isMounted()) {
                 SD.remove(EMPLOYEES_FILE);
+                SD.remove(WHITELIST_FILE);
                 SD.remove(EVENTS_LOG);
                 SD.remove(ADMINS_FILE);
                 SD.remove(CONFIG_BACKUP);
