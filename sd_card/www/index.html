@@ -388,7 +388,7 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
               <select id="ev-syn" onchange="renderEvents()"><option value="">All sync</option><option value="false">Unsynced</option><option value="true">Synced</option></select>
             </div>
             <div class="tbl-wrap"><table>
-              <thead><tr><th>Employee</th><th>Dir</th><th>Decision</th><th class="hide-xs">Sync</th><th>Time</th></tr></thead>
+              <thead><tr><th>Employee</th><th class="hide-xs">UID</th><th>Dir</th><th>Decision</th><th class="hide-xs">Sync</th><th>Time</th></tr></thead>
               <tbody id="ev-body"></tbody>
             </table></div>
           </div>
@@ -947,7 +947,10 @@ function renderDash(){
   de.innerHTML=S.events.slice(0,8).map(e=>`
     <div class="ev-row">
       <span class="dot ${e.decision==='granted'?'dot-g':'dot-r'}"></span>
-      <span class="ev-name">${e.name||'Unknown'}</span>
+      <div style="flex:1;min-width:0">
+        <span class="ev-name">${e.name||'Unknown'}</span>
+        ${e.uid?`<span style="display:block;font-family:ui-monospace,monospace;font-size:10px;color:var(--hint)">${e.uid}</span>`:''}
+      </div>
       <span class="badge ${e.dir==='in'?'b-in':'b-out'}">${(e.dir||'').toUpperCase()}</span>
       <span style="color:var(--hint);font-size:11px;white-space:nowrap">${fmtTsLocal(e.ts)}</span>
     </div>`).join('')||'<div style="padding:20px;text-align:center;font-size:12px;color:var(--hint)">No events yet</div>';
@@ -972,12 +975,13 @@ function renderEvents(){
   b.innerHTML=rows.length?rows.map(e=>`
     <tr>
       <td><div style="display:flex;align-items:center;gap:7px">${av(e.name||'?')}<span>${e.name||'Unknown'}</span></div></td>
+      <td class="hide-xs" style="font-family:ui-monospace,monospace;font-size:11px;color:var(--muted)">${e.uid||'—'}</td>
       <td><span class="badge ${e.dir==='in'?'b-in':'b-out'}">${(e.dir||'?').toUpperCase()}</span></td>
       <td><span class="badge ${e.decision==='granted'?'b-granted':'b-denied'}">${e.decision||'—'}</span></td>
       <td class="hide-xs"><span class="badge ${e.synced?'b-synced':'b-pending'}">${e.synced?'Synced':'Local'}</span></td>
       <td style="color:var(--muted);font-size:11px;white-space:nowrap">${fmtTsLocal(e.ts)}</td>
     </tr>`).join(''):
-    '<tr class="empty-row"><td colspan="5">No events match filter</td></tr>';
+    '<tr class="empty-row"><td colspan="6">No events match filter</td></tr>';
 }
 
 // ── Employees ─────────────────────────────────────────────────────────────────
