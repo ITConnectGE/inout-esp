@@ -1597,6 +1597,15 @@ async function deletePhoto(file){
 setInterval(()=>lg('/api/local/events?limit=300').then(d=>{if(d?.events){S.events=d.events;renderDash();renderEvents();renderAll();}}),10000);
 setInterval(syncServer,60000);
 setInterval(()=>lg('/api/local/status').then(d=>{if(d){S.status=d;applyStatus(d);renderDevice();}}),15000);
+setInterval(async()=>{
+  const e=await lg('/api/local/employees');
+  if(e?.employees){
+    S.employees=e.employees;S.cards=[];
+    for(const emp of e.employees)for(const c of(emp.cards||[]))
+      S.cards.push({uid:c.uid,label:c.label,employee:(emp.first_name||'')+' '+(emp.last_name||''),type:c.type,status:c.status});
+    renderEmployees();renderCards();renderDash();
+  }
+},30000);
 </script>
 </body>
 </html>
