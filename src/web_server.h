@@ -54,6 +54,7 @@
 
 WebServer _server(80);
 extern bool _lcdFound;
+extern TaskHandle_t hSync;
 
 // ── Card tap capture ──────────────────────────────────────────────────────────
 struct PendingTap {
@@ -294,11 +295,15 @@ private:
         if (!requireSuperAdmin()) return;
         String type = _server.hasArg("type") ? _server.arg("type") : "wifi";
         jsend(200, "{\"ok\":true}");
-        delay(300);
+        delay(500); // let HTTP response flush before we start touching hardware
+
+        // Stop the sync task so it can't hold SD files open during the wipe
+        if (hSync != nullptr) vTaskSuspend(hSync);
+
         if (type == "all") {
             // 1. Clear NVS config
             Preferences p; p.begin("cp", false); p.clear(); p.end();
-            // 2. Wipe all SD data including photos
+            // 2. Wipe all SD data
             if (SdManager.isMounted()) {
                 SD.remove(EMPLOYEES_FILE);
                 SD.remove(WHITELIST_FILE);
@@ -313,6 +318,7 @@ private:
             Serial.println("[Reset] Default admin restored");
         }
         WiFiManager wm; wm.resetSettings();
+        delay(500); // let WiFi NVS erase commit to flash before hard reset
         ESP.restart();
     }
 
