@@ -88,7 +88,6 @@ void syncTask(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         ApiClient.syncEvents();
-        ApiClient.syncEmployees();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();

@@ -73,7 +73,8 @@ public:
         SdManager.logEvent(uid, resp.name,
                            dir == DIR_IN ? "in" : "out",
                            resp.granted ? "granted" : "denied",
-                           nowIso());
+                           nowIso(),
+                           resp.reason);
         Serial.printf("[Card] %s → %s (%s)\n",
                       uid.c_str(),
                       resp.granted ? "GRANTED" : "DENIED",
@@ -87,7 +88,12 @@ public:
         if (n == 0) return 0;
         JsonDocument doc;
         JsonArray arr = doc["events"].to<JsonArray>();
-        if (!SdManager.getUnsyncedEvents(arr, 50)) return 0;
+        if (!SdManager.getUnsyncedEvents(arr, 50)) {
+            // All pending events are unsendable (bad timestamps, corrupt lines).
+            // Drop them so they don't block every future sync cycle.
+            SdManager.markAllSynced();
+            return 0;
+        }
         String body; serializeJson(doc, body);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
         HTTPClient http;
@@ -97,33 +103,6 @@ public:
         xSemaphoreGiveRecursive(_mutex);
         if (code == 200 || code == 201) { SdManager.markAllSynced(); return n; }
         Serial.printf("[Sync] Events HTTP %d\n", code); return -1;
-    }
-
-    int syncEmployees() {
-        if (!serverReachable()) return -1;
-        JsonDocument doc;
-        JsonArray arr = doc["employees"].to<JsonArray>();
-        if (!SdManager.getUnsyncedEmployees(arr)) return 0;
-        String body; serializeJson(doc, body);
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
-        HTTPClient http;
-        http.begin(Config.serverUrl + "/device/employees/batch");
-        http.setTimeout(8000); auth(http);
-        int code = http.POST(body);
-        if (code == 200 || code == 201) {
-            JsonDocument res;
-            if (!deserializeJson(res, http.getString()))
-                if (res["ids"].is<JsonArray>())
-                    SdManager.markEmployeesSynced(res["ids"].as<JsonArray>());
-            http.end();
-            xSemaphoreGiveRecursive(_mutex);
-            Serial.println("[Sync] Employees synced");
-            return arr.size();
-        }
-        Serial.printf("[Sync] Employees HTTP %d\n", code);
-        http.end();
-        xSemaphoreGiveRecursive(_mutex);
-        return -1;
     }
 
     bool syncWhitelist() {

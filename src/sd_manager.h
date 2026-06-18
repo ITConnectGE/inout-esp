@@ -13,6 +13,7 @@
 #include "config.h"
 
 #define EMPLOYEES_FILE "/data/employees.json"
+#define WHITELIST_FILE "/data/whitelist.json"
 #define EVENTS_LOG     "/data/events.log"
 #define ADMINS_FILE    "/data/admins.json"
 #define CONFIG_BACKUP  "/data/config.json"
@@ -70,6 +71,10 @@ public:
             File f = SD.open(EMPLOYEES_FILE, FILE_WRITE);
             if (f) { f.print("{\"employees\":[],\"updated_at\":0}"); f.close(); }
         }
+        if (!SD.exists(WHITELIST_FILE)) {
+            File f = SD.open(WHITELIST_FILE, FILE_WRITE);
+            if (f) { f.print("{\"uids\":[]}"); f.close(); }
+        }
         _mounted = true;
         return true;
     }
@@ -80,19 +85,32 @@ public:
 
     String lookupUid(const String& uid) {
         if (!_mounted) return "";
+        // Check locally-added employees first (have full names)
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return "";
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, f); f.close();
-        if (err) return "";
-        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
-            if (String(emp["status"] | "active") != "active") continue;
-            for (JsonObject card : emp["cards"].as<JsonArray>())
-                if (String(card["uid"] | "") == uid &&
-                    String(card["status"] | "active") == "active") {
-                    String name = String(emp["first_name"]|"") + " " + String(emp["last_name"]|"");
-                    name.trim(); return name;
+        if (f) {
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, f); f.close();
+            if (!err) {
+                for (JsonObject emp : doc["employees"].as<JsonArray>()) {
+                    if (String(emp["status"] | "active") != "active") continue;
+                    for (JsonObject card : emp["cards"].as<JsonArray>())
+                        if (String(card["uid"] | "") == uid &&
+                            String(card["status"] | "active") == "active") {
+                            String name = String(emp["first_name"]|"") + " " + String(emp["last_name"]|"");
+                            name.trim(); return name;
+                        }
                 }
+            }
+        }
+        // Fall back to server-synced flat whitelist
+        File wf = SD.open(WHITELIST_FILE, FILE_READ);
+        if (wf) {
+            JsonDocument wdoc;
+            DeserializationError werr = deserializeJson(wdoc, wf); wf.close();
+            if (!werr) {
+                for (JsonVariant u : wdoc["uids"].as<JsonArray>())
+                    if (String(u | "") == uid) return "Authorized";
+            }
         }
         return "";
     }
@@ -233,23 +251,25 @@ public:
         if (!_mounted) return false;
         JsonDocument doc;
         if (deserializeJson(doc, json)) return false;
-        JsonDocument existing;
+        // Save flat UID list from server to dedicated whitelist file
+        if (!doc["whitelist"].is<JsonArray>()) return false;
+        JsonDocument wdoc;
+        wdoc["uids"] = doc["whitelist"];
+        File wf = SD.open(WHITELIST_FILE, FILE_WRITE);
+        if (!wf) return false;
+        serializeJson(wdoc, wf); wf.close();
+        // Bump updated_at in EMPLOYEES_FILE so whitelistUpdatedAt() is accurate
+        JsonDocument empDoc;
         if (SD.exists(EMPLOYEES_FILE)) {
             File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-            if (f) { deserializeJson(existing, f); f.close(); }
+            if (f) { deserializeJson(empDoc, f); f.close(); }
         }
-        if (existing["employees"].is<JsonArray>() && doc["employees"].is<JsonArray>()) {
-            for (JsonObject local : existing["employees"].as<JsonArray>()) {
-                if (local["synced"]|true) continue;
-                bool found = false;
-                for (JsonObject srv : doc["employees"].as<JsonArray>())
-                    if (String(srv["local_id"]|"") == String(local["local_id"]|"")) { found=true; break; }
-                if (!found) doc["employees"].add(local);
-            }
-        }
-        File f = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-        if (!f) return false;
-        serializeJson(doc, f); f.close(); return true;
+        if (!empDoc["employees"].is<JsonArray>()) empDoc["employees"].to<JsonArray>();
+        empDoc["updated_at"] = (long)(millis() / 1000);
+        File ef = SD.open(EMPLOYEES_FILE, FILE_WRITE);
+        if (!ef) return false;
+        serializeJson(empDoc, ef); ef.close();
+        return true;
     }
 
     long whitelistUpdatedAt() {
@@ -271,13 +291,16 @@ public:
     }
 
     void logEvent(const String& uid, const String& name,
-                  const String& dir, const String& decision, const String& ts) {
+                  const String& direction, const String& decision,
+                  const String& happened_at, const String& reason) {
         if (!_mounted) return;
         File f = SD.open(EVENTS_LOG, FILE_APPEND);
         if (!f) return;
         JsonDocument doc;
-        doc["uid"]=uid; doc["name"]=name; doc["dir"]=dir;
-        doc["decision"]=decision; doc["ts"]=ts; doc["synced"]=false;
+        // Keep "dir" and "ts" for local panel compatibility; "reason" is new
+        doc["uid"]=uid; doc["name"]=name; doc["dir"]=direction;
+        doc["decision"]=decision; doc["ts"]=happened_at;
+        doc["reason"]=reason; doc["synced"]=false;
         serializeJson(doc, f); f.println(); f.close();
     }
 
@@ -302,7 +325,28 @@ public:
             String l = f.readStringUntil('\n'); l.trim();
             if (l.length() < 5 || l.indexOf("\"synced\":false") < 0) continue;
             JsonDocument tmp;
-            if (!deserializeJson(tmp, l)) { out.add(tmp.as<JsonObject>()); n++; }
+            if (deserializeJson(tmp, l)) continue;
+            JsonObject src = tmp.as<JsonObject>();
+            // Support both log formats:
+            //   current:      "dir" + "ts"
+            //   transitional: "direction" + "happened_at"  (logged between firmware edits)
+            String ts_val  = src["ts"].isNull()
+                ? String(src["happened_at"] | "")
+                : String(src["ts"]          | "");
+            String dir_val = src["dir"].isNull()
+                ? String(src["direction"] | "unknown")
+                : String(src["dir"]       | "unknown");
+            // Skip events whose timestamp is empty or the pre-NTP fallback ("~NNNms").
+            // markAllSynced() will clear them once the valid batch succeeds.
+            if (ts_val.length() == 0 || ts_val[0] == '~') continue;
+            JsonObject dst = out.add<JsonObject>();
+            dst["uid"]         = src["uid"]      | "";
+            dst["direction"]   = dir_val;
+            dst["decision"]    = src["decision"] | "";
+            dst["happened_at"] = ts_val;
+            String rsn = src["reason"] | "";
+            if (rsn.length() > 0) dst["reason"] = rsn;
+            n++;
         }
         f.close(); return n > 0;
     }
