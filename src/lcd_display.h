@@ -28,6 +28,7 @@ private:
     uint32_t _tapShownAt    = 0;
     uint32_t _lastClockMs   = 0;
     String   _fallback      = "";
+    uint32_t _fallbackUntil = 0;
 
     uint8_t _chCheck[8] = {0,1,3,22,28,8,0,0};
     uint8_t _chCross[8] = {0,17,10,4,10,17,0,0};
@@ -43,7 +44,7 @@ private:
     // "HH:MM      dd/mm"  — time on left (5), spaces, date on right (5)
     String clockLine() {
         struct tm t;
-        if (!getLocalTime(&t, 50)) {
+        if (!getLocalTime(&t, 50) || (_fallbackUntil && millis() < _fallbackUntil)) {
             if (_fallback.length() > 0) {
                 String s = _fallback.substring(0, LCD_COLS);
                 int pad = (LCD_COLS - (int)s.length()) / 2;
@@ -142,8 +143,9 @@ public:
         if (!_found) return;
         _lcd->clear();
         delay(10);
-        _showingTap  = false;
-        _lastClockMs = millis();
+        _showingTap    = false;
+        _lastClockMs   = millis();
+        _fallbackUntil = millis() + 10000;
         renderIdle();
     }
 } Lcd;
