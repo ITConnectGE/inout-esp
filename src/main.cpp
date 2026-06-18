@@ -1,5 +1,5 @@
 /**
- * InOut Firmware v0.3.1
+ * InOut Firmware v0.3.2
  * ESP32-WROOM32 · 2x PN532 · SD card · Relay · Buzzer · LEDs · LCD 16x2
  *
  * Single VSPI bus (SCK=18 MISO=19 MOSI=23) shared by PN532 readers + SD card.
@@ -88,6 +88,7 @@ void syncTask(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         ApiClient.syncEvents();
+        ApiClient.syncEmployees();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
@@ -99,7 +100,7 @@ void syncTask(void*) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200); delay(300);
-    Serial.println("\n[InOut] v0.3.1 booting");
+    Serial.println("\n[InOut] v0.3.2 booting");
 
     for (int p : {DEFAULT_LED1, DEFAULT_LED2, DEFAULT_LED3}) {
         pinMode(p, OUTPUT); digitalWrite(p, LOW);

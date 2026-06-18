@@ -82,6 +82,31 @@ public:
         return resp;
     }
 
+    int syncEmployees() {
+        if (!serverReachable()) return -1;
+        JsonDocument doc;
+        JsonArray arr = doc["employees"].to<JsonArray>();
+        if (!SdManager.getUnsyncedEmployees(arr)) return 0;
+        String body; serializeJson(doc, body);
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
+        HTTPClient http;
+        http.begin(Config.serverUrl + "/device/employees/batch");
+        http.setTimeout(8000); auth(http);
+        int code = http.POST(body);
+        String respBody = http.getString(); http.end();
+        xSemaphoreGiveRecursive(_mutex);
+        if (code == 200 || code == 201) {
+            JsonDocument resp;
+            if (!deserializeJson(resp, respBody)) {
+                JsonArray ids = resp["ids"].as<JsonArray>();
+                SdManager.markEmployeesSynced(ids);
+            }
+            Serial.printf("[Sync] Employees synced: %d\n", (int)arr.size());
+            return (int)arr.size();
+        }
+        Serial.printf("[Sync] Employees HTTP %d\n", code); return -1;
+    }
+
     int syncEvents() {
         if (!serverReachable()) return -1;
         int n = SdManager.unsyncedCount();
@@ -133,7 +158,7 @@ public:
         http.begin(Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
-        doc["firmware"]        = "0.3.1";
+        doc["firmware"]        = "0.3.2";
         doc["ip"]              = WiFi.localIP().toString();
         doc["rssi"]            = WiFi.RSSI();
         doc["config_version"]  = Config.configVersion;

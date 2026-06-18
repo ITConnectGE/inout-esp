@@ -251,24 +251,79 @@ public:
         if (!_mounted) return false;
         JsonDocument doc;
         if (deserializeJson(doc, json)) return false;
-        // Save flat UID list from server to dedicated whitelist file
         if (!doc["whitelist"].is<JsonArray>()) return false;
-        JsonDocument wdoc;
-        wdoc["uids"] = doc["whitelist"];
-        File wf = SD.open(WHITELIST_FILE, FILE_WRITE);
-        if (!wf) return false;
-        serializeJson(wdoc, wf); wf.close();
-        // Bump updated_at in EMPLOYEES_FILE so whitelistUpdatedAt() is accurate
-        JsonDocument empDoc;
-        if (SD.exists(EMPLOYEES_FILE)) {
-            File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-            if (f) { deserializeJson(empDoc, f); f.close(); }
+
+        // Step 1: save flat UID whitelist (scoped so wdoc is freed before step 2)
+        {
+            JsonDocument wdoc;
+            JsonArray uids = wdoc["uids"].to<JsonArray>();
+            for (JsonVariant u : doc["whitelist"].as<JsonArray>())
+                uids.add(u.as<String>());
+            File wf = SD.open(WHITELIST_FILE, FILE_WRITE);
+            if (!wf) return false;
+            serializeJson(wdoc, wf); wf.close();
         }
-        if (!empDoc["employees"].is<JsonArray>()) empDoc["employees"].to<JsonArray>();
-        empDoc["updated_at"] = (long)(millis() / 1000);
-        File ef = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-        if (!ef) return false;
-        serializeJson(empDoc, ef); ef.close();
+
+        if (doc["employees"].is<JsonArray>()) {
+            // Step 2a: collect unsynced local employees before overwriting
+            // (scoped so `existing` doc is freed before building empDoc)
+            std::vector<String> locals;
+            {
+                File f = SD.open(EMPLOYEES_FILE, FILE_READ);
+                if (f) {
+                    JsonDocument existing;
+                    if (!deserializeJson(existing, f)) {
+                        for (JsonObject e : existing["employees"].as<JsonArray>()) {
+                            if (!(e["synced"] | true)) {
+                                String s; serializeJson(e, s);
+                                locals.push_back(s);
+                            }
+                        }
+                    }
+                    f.close();
+                }
+            }
+
+            // Step 2b: rebuild employees.json from server data + unsynced locals
+            JsonDocument empDoc;
+            JsonArray arr = empDoc["employees"].to<JsonArray>();
+            for (JsonObject srv : doc["employees"].as<JsonArray>()) {
+                JsonObject emp = arr.add<JsonObject>();
+                emp["id"]         = srv["id"]         | 0;
+                emp["local_id"]   = String("srv_") + String(srv["id"] | 0);
+                emp["first_name"] = srv["first_name"] | "";
+                emp["last_name"]  = srv["last_name"]  | "";
+                emp["status"]     = "active";
+                emp["synced"]     = true;
+                JsonArray cards   = emp["cards"].to<JsonArray>();
+                for (JsonObject c : srv["cards"].as<JsonArray>()) {
+                    JsonObject card  = cards.add<JsonObject>();
+                    card["uid"]    = c["uid"]    | "";
+                    card["status"] = c["status"] | "active";
+                }
+            }
+            for (const String& line : locals) {
+                JsonDocument tmp;
+                if (!deserializeJson(tmp, line)) arr.add(tmp.as<JsonObject>());
+            }
+            empDoc["updated_at"] = (long)(millis() / 1000);
+            File ef = SD.open(EMPLOYEES_FILE, FILE_WRITE);
+            if (!ef) return false;
+            serializeJson(empDoc, ef); ef.close();
+        } else {
+            // No employees in response — just bump updated_at
+            JsonDocument empDoc;
+            if (SD.exists(EMPLOYEES_FILE)) {
+                File f = SD.open(EMPLOYEES_FILE, FILE_READ);
+                if (f) { deserializeJson(empDoc, f); f.close(); }
+            }
+            if (!empDoc["employees"].is<JsonArray>()) empDoc["employees"].to<JsonArray>();
+            empDoc["updated_at"] = (long)(millis() / 1000);
+            File ef = SD.open(EMPLOYEES_FILE, FILE_WRITE);
+            if (!ef) return false;
+            serializeJson(empDoc, ef); ef.close();
+        }
+
         return true;
     }
 
