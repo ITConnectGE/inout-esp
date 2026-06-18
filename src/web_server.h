@@ -245,7 +245,7 @@ private:
         Session s;
         bool authed = AuthManager.validate(getToken(), s);
         JsonDocument doc;
-        doc["firmware"]          = "0.3.0";
+        doc["firmware"]          = "0.3.1";
         doc["identifier"]        = Config.identifier;
         doc["ip"]                = WiFi.localIP().toString();
         doc["rssi"]              = WiFi.RSSI();
