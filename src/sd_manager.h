@@ -284,15 +284,36 @@ public:
                 }
             }
 
-            // Step 2b: rebuild employees.json from server data + unsynced locals
+            // Step 2b: rebuild employees.json from server data + unsynced locals.
+            // Build a set of server IDs already covered by a local unsynced edit so
+            // we don't create a duplicate entry for the same person.
+            std::vector<int> localServerIds;
+            for (const String& line : locals) {
+                JsonDocument tmp;
+                if (!deserializeJson(tmp, line)) {
+                    int sid = tmp["id"] | 0;
+                    if (sid > 0) localServerIds.push_back(sid);
+                }
+            }
+
             JsonDocument empDoc;
             JsonArray arr = empDoc["employees"].to<JsonArray>();
             for (JsonObject srv : doc["employees"].as<JsonArray>()) {
+                int srvId = srv["id"] | 0;
+                bool hasLocalEdit = false;
+                for (int lid : localServerIds)
+                    if (lid == srvId) { hasLocalEdit = true; break; }
+                if (hasLocalEdit) continue; // local version will be appended below
+
                 JsonObject emp = arr.add<JsonObject>();
-                emp["id"]         = srv["id"]         | 0;
-                emp["local_id"]   = String("srv_") + String(srv["id"] | 0);
+                emp["id"]         = srvId;
+                emp["local_id"]   = String("srv_") + String(srvId);
                 emp["first_name"] = srv["first_name"] | "";
                 emp["last_name"]  = srv["last_name"]  | "";
+                emp["department"] = srv["department"] | "";
+                emp["position"]   = srv["position"]   | "";
+                emp["phone"]      = srv["phone"]      | "";
+                emp["email"]      = srv["email"]      | "";
                 emp["status"]     = "active";
                 emp["synced"]     = true;
                 JsonArray cards   = emp["cards"].to<JsonArray>();
