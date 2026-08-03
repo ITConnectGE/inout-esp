@@ -6,9 +6,10 @@
  * Idle:  Line 0: "14:23      12/06"  (time left, date right)
  *        Line 1: "     InOut      "  (centered)
  *
- * Tap:   Line 0: "✓ GRANTED" / "✗ DENIED"
- *        Line 1: employee name
- *        Reverts to idle after TAP_TIMEOUT_MS
+ * Tap:   Line 0: "OK GRANTED" / "NO DENIED"  (plain text, not icons — keeps
+ *                all 8 CGRAM slots free for Georgian letters in the name)
+ *        Line 1: employee name (Georgian-aware, scrolls if >LCD_COLS chars)
+ *        Reverts to idle after TAP_TIMEOUT_MS (extended for long names)
  */
 
 #include <Arduino.h>
@@ -16,9 +17,11 @@
 #include <LiquidCrystal_I2C.h>
 #include <time.h>
 #include "config.h"
+#include "georgian_lcd.h"
 
 #define TAP_TIMEOUT_MS 4000
 #define LCD_COLS 16
+#define GEORGIAN_SCROLL_STEP_MS 400
 
 struct LcdDisplayClass {
 private:
@@ -26,19 +29,15 @@ private:
     bool     _found         = false;
     bool     _showingTap    = false;
     uint32_t _tapShownAt    = 0;
+    uint32_t _tapTimeoutMs  = TAP_TIMEOUT_MS;
     uint32_t _lastClockMs   = 0;
     String   _fallback      = "";
     uint32_t _fallbackUntil = 0;
 
-    uint8_t _chCheck[8] = {0,1,3,22,28,8,0,0};
-    uint8_t _chCross[8] = {0,17,10,4,10,17,0,0};
-
-    // Print exactly LCD_COLS chars on a row — pads or truncates
+    // Print exactly LCD_COLS chars on a row — pads or truncates.
+    // Georgian-aware: UTF-8 Georgian letters are rendered via CGRAM glyphs.
     void printLine(int row, const String& s) {
-        _lcd->setCursor(0, row);
-        String p = s.substring(0, LCD_COLS);
-        while ((int)p.length() < LCD_COLS) p += ' ';
-        _lcd->print(p);
+        GeorgianLcd.printPadded(row, s, LCD_COLS);
     }
 
     // "HH:MM      dd/mm"  — time on left (5), spaces, date on right (5)
@@ -84,8 +83,7 @@ public:
         _lcd->backlight();
         _lcd->clear();                   // ← explicit clear on startup
         delay(50);
-        _lcd->createChar(0, _chCheck);
-        _lcd->createChar(1, _chCross);
+        GeorgianLcd.begin(_lcd);         // no icons — all 8 CGRAM slots free for Georgian glyphs
         _found = true;
         // Show clean boot message
         printLine(0, "  InOut v0.3.2");
@@ -97,16 +95,19 @@ public:
 
     void loop() {
         if (!_found) return;
-        // Clear tap message after timeout
-        if (_showingTap && (millis() - _tapShownAt) > TAP_TIMEOUT_MS) {
-            _lcd->clear();
-            delay(5);
-            renderIdle();
-            _lastClockMs = millis();
-            _showingTap = false;
-        }
-        // Update clock every second when idle
-        if (!_showingTap && (millis() - _lastClockMs) >= 1000) {
+        if (_showingTap) {
+            // Slide the name into view if it's longer than the display width.
+            GeorgianLcd.tick(GEORGIAN_SCROLL_STEP_MS);
+            // Clear tap message after timeout
+            if ((millis() - _tapShownAt) > _tapTimeoutMs) {
+                _lcd->clear();
+                delay(5);
+                renderIdle();
+                _lastClockMs = millis();
+                _showingTap = false;
+            }
+        } else if ((millis() - _lastClockMs) >= 1000) {
+            // Update clock every second when idle
             printLine(0, clockLine());
             _lastClockMs = millis();
         }
@@ -116,12 +117,13 @@ public:
         if (!_found) return;
         _lcd->clear();
         delay(5);
-        _lcd->setCursor(0, 0);
-        if (granted) { _lcd->write(byte(0)); _lcd->print(" GRANTED        "); }
-        else         { _lcd->write(byte(1)); _lcd->print(" DENIED         "); }
-        printLine(1, name.length() > 0 ? name : "Unknown card");
+        printLine(0, granted ? "OK GRANTED" : "NO DENIED");
+        GeorgianLcd.startScroll(1, LCD_COLS, name.length() > 0 ? name : "Unknown card");
         _showingTap = true;
         _tapShownAt = millis();
+        // Give long names enough time to scroll into view fully at least once
+        uint32_t neededMs = GeorgianLcd.scrollDurationMs(GEORGIAN_SCROLL_STEP_MS) + 700;
+        _tapTimeoutMs = neededMs > TAP_TIMEOUT_MS ? neededMs : TAP_TIMEOUT_MS;
     }
 
     void showBoot(const String& msg) {
