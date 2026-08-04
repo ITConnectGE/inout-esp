@@ -127,7 +127,6 @@ void setup() {
     if (sdOk) {
         Logger.setSDReady(true);
         Logger.log(LOG_INFO, "SYS", "InOut v0.3.2 boot — SD ready");
-        ApiClient.restoreTimeFromSD();
     }
 
     // ── 3. Auth (requires SD) ─────────────────────────────────────────────────
@@ -179,9 +178,11 @@ void setup() {
 
     // ── 8. API + Web server ───────────────────────────────────────────────────
     ApiClient.begin();
-    // Apply saved timezone
+    // Apply saved timezone, then restore clock from SD — must come after
+    // configTime() inside begin() so SNTP init doesn't wipe the saved epoch.
     setenv("TZ", Config.getPosixTz().c_str(), 1);
     tzset();
+    ApiClient.restoreTimeFromSD();
     Logger.log(LOG_INFO, "SYS", "TZ: " + Config.timezone + " → " + Config.getPosixTz());
     WebServerManager.begin();
 
