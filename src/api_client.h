@@ -213,89 +213,84 @@ public:
         int batchSize = (int)arr.size();
         const char* boundary = "----ESP32Bnd9f2a";
 
-        // ── Build text fields for all events ───────────────────────────────────
-        String textPart;
-        textPart.reserve(batchSize * 320);
-        for (int i = 0; i < batchSize; i++) {
-            JsonObject ev = arr[i];
-            String uid = ev["uid"] | "";
-            String ts  = ev["happened_at"] | "";
-            String dec = ev["decision"] | "denied";
-            String dir = (Config.directionMode == "toggle")
-                         ? "unknown" : String(ev["direction"] | "unknown");
-            String rsn = ev["reason"] | "";
-            auto fld = [&](const String& nm, const String& val) {
-                textPart += "--"; textPart += boundary; textPart += "\r\n"
-                    "Content-Disposition: form-data; name=\""; textPart += nm;
-                textPart += "\"\r\n\r\n"; textPart += val; textPart += "\r\n";
-            };
-            fld("events[" + String(i) + "][uid]", uid);
-            fld("events[" + String(i) + "][happened_at]", ts);
-            fld("events[" + String(i) + "][decision]", dec);
-            fld("events[" + String(i) + "][direction]", dir);
-            if (rsn.length()) fld("events[" + String(i) + "][reason]", rsn);
-        }
-
-        // ── Find matching photos; include those that fit in free heap ──────────
-        struct PInfo { String path; String hdr; size_t size; bool ok = false; };
+        // ── Find photos for these events ───────────────────────────────────────
+        struct PInfo { String path; size_t size; bool ok = false; };
         PInfo photos[10];
-        size_t photoByteTotal = 0;
-        // Reserve 80 KB headroom for stack, HTTPClient, and JSON buffers.
-        size_t budget = ESP.getFreeHeap() > 80000 ? ESP.getFreeHeap() - 80000 : 0;
-
         for (int i = 0; i < batchSize; i++) {
-            String uid = arr[i]["uid"] | "";
-            String ts  = arr[i]["happened_at"] | "";
-            photos[i].path = SdManager.getPhotoForEvent(uid, ts);
+            photos[i].path = SdManager.getPhotoForEvent(
+                String(arr[i]["uid"] | ""), String(arr[i]["happened_at"] | ""));
             if (photos[i].path.isEmpty()) continue;
             File pf = SD.open(photos[i].path, FILE_READ);
             if (!pf) { photos[i].path = ""; continue; }
             photos[i].size = pf.size(); pf.close();
             if (photos[i].size == 0 || photos[i].size > 250000)
                 { photos[i].path = ""; continue; }
-            photos[i].hdr  = "--"; photos[i].hdr += boundary;
-            photos[i].hdr += "\r\nContent-Disposition: form-data; name=\"photos[";
-            photos[i].hdr += String(i);
-            photos[i].hdr += "]\"; filename=\"p.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
-            size_t needed = photos[i].hdr.length() + photos[i].size + 2; // +2 \r\n
-            if (textPart.length() + photoByteTotal + needed < budget) {
-                photos[i].ok = true;
-                photoByteTotal += needed;
-            }
+            photos[i].ok = true;
         }
 
-        // ── Allocate and fill multipart body ───────────────────────────────────
-        String tail = "--"; tail += boundary; tail += "--\r\n";
-        size_t totalLen = textPart.length() + photoByteTotal + tail.length();
-        uint8_t* body = (uint8_t*)malloc(totalLen);
-        if (!body) {
-            // Not enough contiguous heap — send without photos.
-            Logger.logf(LOG_WARN, "SYNC", "OOM (%u B) — sending events without photos",
-                        (unsigned)totalLen);
-            for (int i = 0; i < batchSize; i++) photos[i].ok = false;
-            photoByteTotal = 0;
-            totalLen = textPart.length() + tail.length();
-            body = (uint8_t*)malloc(totalLen);
-            if (!body) {
-                Logger.log(LOG_ERROR, "SYNC", "Events sync: OOM, skipping");
+        // ── Write multipart body to SD temp file ───────────────────────────────
+        // Avoids holding a large RAM buffer (photo bytes) during the SSL
+        // handshake which needs ~80 KB of its own — the two together caused
+        // "SSL alloc failed" OOM errors. Streaming from SD keeps peak RAM low.
+        const char* tmpPath = "/data/batch.tmp";
+        {
+            File tmp = SD.open(tmpPath, FILE_WRITE);
+            if (!tmp) {
+                Logger.log(LOG_ERROR, "SYNC", "Cannot create batch temp file");
                 return -1;
             }
+            for (int i = 0; i < batchSize; i++) {
+                String uid = arr[i]["uid"] | "";
+                String ts  = arr[i]["happened_at"] | "";
+                String dec = arr[i]["decision"] | "denied";
+                String dir = (Config.directionMode == "toggle")
+                             ? "unknown" : String(arr[i]["direction"] | "unknown");
+                String rsn = arr[i]["reason"] | "";
+                auto fld = [&](const String& nm, const String& val) {
+                    tmp.print("--"); tmp.print(boundary);
+                    tmp.print("\r\nContent-Disposition: form-data; name=\"");
+                    tmp.print(nm); tmp.print("\"\r\n\r\n");
+                    tmp.print(val); tmp.print("\r\n");
+                };
+                fld("events[" + String(i) + "][uid]", uid);
+                fld("events[" + String(i) + "][happened_at]", ts);
+                fld("events[" + String(i) + "][decision]", dec);
+                fld("events[" + String(i) + "][direction]", dir);
+                if (rsn.length()) fld("events[" + String(i) + "][reason]", rsn);
+            }
+            for (int i = 0; i < batchSize; i++) {
+                if (!photos[i].ok) continue;
+                tmp.print("--"); tmp.print(boundary);
+                tmp.print("\r\nContent-Disposition: form-data; name=\"photos[");
+                tmp.print(i); tmp.print("]\"; filename=\"p.jpg\"\r\n"
+                    "Content-Type: image/jpeg\r\n\r\n");
+                File pf = SD.open(photos[i].path, FILE_READ);
+                if (pf) {
+                    uint8_t chunk[512];
+                    while (pf.available()) {
+                        int rd = pf.read(chunk, sizeof(chunk));
+                        if (rd > 0) tmp.write(chunk, rd);
+                    }
+                    pf.close();
+                }
+                tmp.print("\r\n");
+            }
+            tmp.print("--"); tmp.print(boundary); tmp.print("--\r\n");
+            tmp.close();
         }
 
-        size_t pos = 0;
-        memcpy(body + pos, textPart.c_str(), textPart.length()); pos += textPart.length();
-        for (int i = 0; i < batchSize; i++) {
-            if (!photos[i].ok) continue;
-            memcpy(body + pos, photos[i].hdr.c_str(), photos[i].hdr.length());
-            pos += photos[i].hdr.length();
-            File pf = SD.open(photos[i].path, FILE_READ);
-            if (pf) { pos += pf.read(body + pos, photos[i].size); pf.close(); }
-            body[pos++] = '\r'; body[pos++] = '\n';
+        // ── Stream from SD to server — peak RAM is SSL context only ───────────
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
+            SD.remove(tmpPath); return -1;
         }
-        memcpy(body + pos, tail.c_str(), tail.length()); pos += tail.length();
-
-        // ── POST ───────────────────────────────────────────────────────────────
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) { free(body); return -1; }
+        File bodyFile = SD.open(tmpPath, FILE_READ);
+        if (!bodyFile) {
+            xSemaphoreGiveRecursive(_mutex);
+            Logger.log(LOG_ERROR, "SYNC", "Cannot reopen batch temp file");
+            SD.remove(tmpPath);
+            return -1;
+        }
+        size_t bodyLen = bodyFile.size();
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/events/batch");
         http.setTimeout(30000);
@@ -304,18 +299,19 @@ public:
         http.addHeader("X-Device-ID",   Config.identifier);
         String ct = "multipart/form-data; boundary="; ct += boundary;
         http.addHeader("Content-Type", ct);
-        int code = http.POST(body, pos);
+        int code = http.sendRequest("POST", &bodyFile, bodyLen);
         String respBody = code > 0 ? http.getString() : "";
         http.end();
+        bodyFile.close();
         xSemaphoreGiveRecursive(_mutex);
-        free(body);
+        SD.remove(tmpPath);
 
         if (code == 200 || code == 201) {
             SdManager.markNEventsSynced(batchSize);
             int nPhotos = 0;
             for (int i = 0; i < batchSize; i++) {
-                // Delete photos for this batch regardless of whether they were
-                // included — events are now synced so photos would be orphaned.
+                // Delete all photos for this batch: events are synced so any
+                // unincluded photo would be orphaned on SD with no way to upload.
                 if (!photos[i].path.isEmpty()) { SD.remove(photos[i].path.c_str()); nPhotos++; }
             }
             Logger.logf(LOG_INFO, "SYNC", "Events synced: %d (of %d), photos: %d",
