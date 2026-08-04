@@ -487,6 +487,49 @@ private:
         jsend(200, "{\"ok\":true}");
     }
 
+    // ── GET /api/time ─────────────────────────────────────────────────────────
+    void handleGetTime() {
+        Session s; if (!requireAuth(s)) return;
+        struct tm t;
+        bool ok = getLocalTime(&t, 100);
+        char buf[25] = "";
+        if (ok) strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &t);
+        String json = "{\"ts\":\"" + String(buf) + "\",\"ntp\":"
+                    + (ApiClient.isNtpSynced() ? "true" : "false") + "}";
+        jsend(200, json);
+    }
+
+    // ── POST /api/time (super admin only) ─────────────────────────────────────
+    // Body: { "ts": "2026-08-04T14:30:00" }  — local device time
+    void handleSetTime() {
+        Session s;
+        if (!requireAuth(s)) return;
+        if (s.role != "super_admin") {
+            cors(); _server.send(403, "application/json", "{\"error\":\"forbidden\"}"); return;
+        }
+        JsonDocument doc;
+        if (deserializeJson(doc, _server.arg("plain"))) {
+            cors(); _server.send(400, "application/json", "{\"error\":\"invalid json\"}"); return;
+        }
+        const char* ts = doc["ts"];
+        if (!ts) {
+            cors(); _server.send(400, "application/json", "{\"error\":\"ts required\"}"); return;
+        }
+        int y, mo, d, h, mi, s2;
+        if (sscanf(ts, "%4d-%2d-%2dT%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &s2) < 5) {
+            cors(); _server.send(400, "application/json", "{\"error\":\"use YYYY-MM-DDTHH:MM:SS\"}"); return;
+        }
+        struct tm t = {};
+        t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d;
+        t.tm_hour = h; t.tm_min = mi; t.tm_sec = s2; t.tm_isdst = -1;
+        time_t epoch = mktime(&t); // input is local time → UTC epoch
+        struct timeval tv = { epoch, 0 };
+        settimeofday(&tv, nullptr);
+        ApiClient.saveTimeToSD();
+        Logger.logf(LOG_INFO, "TIME", "Manual time set: %s by=%s", ts, s.username.c_str());
+        jsend(200, "{\"ok\":true}");
+    }
+
     // ── GET /api/photos ───────────────────────────────────────────────────────
     void handleListPhotos() {
         Session s; if (!requireAuth(s)) return;
@@ -672,6 +715,8 @@ public:
         _server.on("/api/photos/delete",     HTTP_POST,   [this]{ handleDeletePhoto(); });
         _server.on("/api/logs",              HTTP_GET,    [this]{ handleGetLogs(); });
         _server.on("/api/logs",              HTTP_DELETE, [this]{ handleClearLogs(); });
+        _server.on("/api/time",              HTTP_GET,    [this]{ handleGetTime(); });
+        _server.on("/api/time",              HTTP_POST,   [this]{ handleSetTime(); });
 
         // Routes previously in onNotFound — registered explicitly so the framework
         // finds them directly and doesn't emit [E] _handleRequest(): not found.

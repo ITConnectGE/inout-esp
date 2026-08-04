@@ -127,6 +127,7 @@ void setup() {
     if (sdOk) {
         Logger.setSDReady(true);
         Logger.log(LOG_INFO, "SYS", "InOut v0.3.2 boot — SD ready");
+        ApiClient.restoreTimeFromSD();
     }
 
     // ── 3. Auth (requires SD) ─────────────────────────────────────────────────

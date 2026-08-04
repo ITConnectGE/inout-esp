@@ -22,6 +22,37 @@ private:
     bool _ntpSynced = false;
     SemaphoreHandle_t _mutex = nullptr;
 
+    static bool setTimeFromEpoch(time_t epoch) {
+        if (epoch < 1700000000L) return false; // sanity: after 2023-11
+        struct timeval tv = { epoch, 0 };
+        return settimeofday(&tv, nullptr) == 0;
+    }
+
+    // Parse RFC 1123 Date header ("Mon, 04 Aug 2026 14:30:00 GMT") and set
+    // device clock. HTTP Date is always UTC, so we switch TZ temporarily.
+    void syncTimeFromHttpDate(const String& dateStr) {
+        if (dateStr.isEmpty()) return;
+        char mon[4] = {};
+        int day, year, h, mi, s;
+        if (sscanf(dateStr.c_str(), "%*s %d %3s %d %d:%d:%d",
+                   &day, mon, &year, &h, &mi, &s) != 6) return;
+        static const char* months[] = {
+            "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
+        };
+        int mo = -1;
+        for (int i = 0; i < 12; i++)
+            if (strncmp(mon, months[i], 3) == 0) { mo = i; break; }
+        if (mo < 0 || year < 2024) return;
+        struct tm t = {};
+        t.tm_year = year - 1900; t.tm_mon = mo; t.tm_mday = day;
+        t.tm_hour = h; t.tm_min = mi; t.tm_sec = s; t.tm_isdst = 0;
+        setenv("TZ", "UTC0", 1); tzset();
+        time_t epoch = mktime(&t);
+        setenv("TZ", Config.getPosixTz().c_str(), 1); tzset();
+        if (setTimeFromEpoch(epoch))
+            Logger.logf(LOG_INFO, "TIME", "Set from server Date header: %s", dateStr.c_str());
+    }
+
     bool serverReachable() {
         return WiFi.status() == WL_CONNECTED
             && Config.serverUrl.length() > 0
@@ -140,6 +171,33 @@ private:
     }
 
 public:
+    // Persist UTC epoch to SD so reboots start with an approximate clock.
+    void saveTimeToSD() {
+        if (!SdManager.isMounted()) return;
+        time_t epoch = time(nullptr);
+        if (epoch < 1700000000L) return;
+        File f = SD.open("/data/time.json", FILE_WRITE);
+        if (!f) return;
+        JsonDocument doc;
+        doc["epoch"] = (long)epoch;
+        serializeJson(doc, f);
+        f.close();
+    }
+
+    // Load epoch saved by saveTimeToSD() and set the system clock.
+    // Call right after SD mounts, before WiFi connects.
+    void restoreTimeFromSD() {
+        if (!SdManager.isMounted() || !SD.exists("/data/time.json")) return;
+        File f = SD.open("/data/time.json", FILE_READ);
+        if (!f) return;
+        JsonDocument doc;
+        if (deserializeJson(doc, f)) { f.close(); return; }
+        f.close();
+        long epoch = doc["epoch"] | 0L;
+        if (setTimeFromEpoch((time_t)epoch))
+            Logger.logf(LOG_INFO, "TIME", "Clock restored from SD (epoch=%ld)", epoch);
+    }
+
     void begin() {
         _mutex = xSemaphoreCreateRecursiveMutex();
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
@@ -156,6 +214,7 @@ public:
             setenv("TZ", Config.getPosixTz().c_str(), 1);
             tzset();
             _ntpSynced = true;
+            saveTimeToSD();
             Logger.logf(LOG_INFO, "NTP", "Synced: %02d:%02d  TZ=%s",
                         t.tm_hour, t.tm_min, Config.timezone.c_str());
         }
@@ -264,6 +323,8 @@ public:
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/sync");
         http.setTimeout(8000); auth(http);
+        const char* dateHdr[] = {"Date"};
+        http.collectHeaders(dateHdr, 1);
         int code = http.GET();
         if (code != 200) {
             String errBody = code > 0 ? http.getString() : "";
@@ -271,6 +332,9 @@ public:
             Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed", serverErrMsg(code, errBody));
             return false;
         }
+        // Use server's Date header to set clock when NTP hasn't resolved yet.
+        if (!_ntpSynced && http.hasHeader("Date"))
+            syncTimeFromHttpDate(http.header("Date"));
         String payload = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
         JsonDocument doc;
