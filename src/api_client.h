@@ -33,6 +33,22 @@ private:
         http.addHeader("X-Device-ID",   Config.identifier);
     }
 
+    // Extract a human-readable error string from an HTTP response body.
+    // ArduinoJson decodes \uXXXX Unicode escapes to UTF-8 when parsing, so
+    // Georgian characters stored as \u10XX in JSON are printed correctly.
+    String serverErrMsg(int code, const String& body) {
+        String prefix = "HTTP " + String(code) + " — ";
+        JsonDocument doc;
+        if (body.length() > 0 && !deserializeJson(doc, body)) {
+            // Prefer "message", fall back to "error", then raw body
+            const char* msg = nullptr;
+            if (!doc["message"].isNull()) msg = doc["message"];
+            else if (!doc["error"].isNull())   msg = doc["error"];
+            if (msg) return prefix + String(msg).substring(0, 160);
+        }
+        return prefix + body.substring(0, 120);
+    }
+
 public:
     void begin() {
         _mutex = xSemaphoreCreateRecursiveMutex();
@@ -112,9 +128,7 @@ public:
             Logger.logf(LOG_INFO, "SYNC", "Employees synced: %d record(s)", count);
             return count;
         }
-        // Truncate body to 120 chars to keep the log readable
-        String detail = "HTTP " + String(code) + " — " + respBody.substring(0, 120);
-        Logger.log(LOG_ERROR, "SYNC", "Employees sync failed", detail);
+        Logger.log(LOG_ERROR, "SYNC", "Employees sync failed", serverErrMsg(code, respBody));
         return -1;
     }
 
@@ -147,8 +161,7 @@ public:
             Logger.logf(LOG_INFO, "SYNC", "Events synced: %d of %d record(s)", batchSize, n);
             return n;
         }
-        String detail = "HTTP " + String(code) + " — " + respBody.substring(0, 120);
-        Logger.log(LOG_ERROR, "SYNC", "Events sync failed", detail);
+        Logger.log(LOG_ERROR, "SYNC", "Events sync failed", serverErrMsg(code, respBody));
         return -1;
     }
 
@@ -163,10 +176,9 @@ public:
         http.setTimeout(8000); auth(http);
         int code = http.GET();
         if (code != 200) {
-            String detail = "HTTP " + String(code);
-            if (code > 0) detail += " — " + http.getString().substring(0, 80);
+            String errBody = code > 0 ? http.getString() : "";
             http.end(); xSemaphoreGiveRecursive(_mutex);
-            Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed", detail);
+            Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed", serverErrMsg(code, errBody));
             return false;
         }
         String payload = http.getString(); http.end();
@@ -208,8 +220,9 @@ public:
             JsonDocument res;
             if (!deserializeJson(res, http.getString()))
                 resync = res["resync"] | false;
-        } else if (code != -1) {
-            Logger.logf(LOG_WARN, "API", "Heartbeat HTTP %d", code);
+        } else if (code > 0) {
+            Logger.log(LOG_WARN, "API", "Heartbeat failed",
+                       serverErrMsg(code, http.getString()));
         } else {
             Logger.log(LOG_WARN, "API", "Heartbeat: no response (connection failed)");
         }

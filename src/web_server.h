@@ -673,13 +673,20 @@ public:
         _server.on("/api/logs",              HTTP_GET,    [this]{ handleGetLogs(); });
         _server.on("/api/logs",              HTTP_DELETE, [this]{ handleClearLogs(); });
 
+        // Routes previously in onNotFound — registered explicitly so the framework
+        // finds them directly and doesn't emit [E] _handleRequest(): not found.
+        _server.on("/api/local/employees", HTTP_GET, [this]{ handleLocalEmployees(); });
+        _server.on("/api/local/events",    HTTP_GET, [this]{ handleLocalEvents(); });
+        _server.on("/api/local/status",    HTTP_GET, [this]{ handleStatus(); });
+
+        // Suppress browser favicon / icon requests
+        _server.on("/favicon.ico",           HTTP_GET, [this]{ cors(); _server.send(204); });
+        _server.on("/apple-touch-icon.png",  HTTP_GET, [this]{ cors(); _server.send(204); });
+
         _server.onNotFound([this]{
             const String& uri = _server.uri();
             if (_server.method()==HTTP_OPTIONS) { cors(); _server.send(204); return; }
-            if (uri=="/api/local/employees")          { handleLocalEmployees(); return; }
-            if (uri.startsWith("/api/local/events"))  { handleLocalEvents();    return; }
-            if (uri=="/api/local/status")             { handleStatus();         return; }
-            if (uri.startsWith("/api/proxy/"))        { handleProxy();          return; }
+            if (uri.startsWith("/api/proxy/")) { handleProxy(); return; }
             // Serve photos — auth required (token via header or ?token= query param)
             if (uri.startsWith("/photos/") && uri.length() > 8) {
                 Session ps;
