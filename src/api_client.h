@@ -11,10 +11,11 @@
 #include "logger.h"
 
 struct ApiResponse {
-    bool   granted = false;
-    int    openMs  = 3000;
+    bool   granted    = false;
+    int    openMs     = 3000;
     String name;
     String reason;
+    String happenedAt; // ISO timestamp recorded at tap time — shared with photo filename
 };
 
 struct ApiClientClass {
@@ -144,16 +145,17 @@ public:
 
     ApiResponse processCard(const String& uid, CardDirection dir) {
         ApiResponse resp;
-        resp.name    = SdManager.lookupUid(uid);
-        resp.granted = resp.name.length() > 0;
-        resp.openMs  = Config.relayMs;
-        resp.reason  = resp.granted ? "ok" : "card_unknown";
-        String logDir = (Config.directionMode == "toggle")
-                        ? "unknown" : (dir == DIR_IN ? "in" : "out");
+        resp.name       = SdManager.lookupUid(uid);
+        resp.granted    = resp.name.length() > 0;
+        resp.openMs     = Config.relayMs;
+        resp.reason     = resp.granted ? "ok" : "card_unknown";
+        resp.happenedAt = nowIso(); // capture once — reused for both event log and photo filename
+        String logDir   = (Config.directionMode == "toggle")
+                          ? "unknown" : (dir == DIR_IN ? "in" : "out");
         SdManager.logEvent(uid, resp.name,
                            logDir,
                            resp.granted ? "granted" : "denied",
-                           nowIso(),
+                           resp.happenedAt,
                            resp.reason);
         if (resp.granted) {
             Logger.logf(LOG_INFO, "CARD", "GRANTED  uid=%s  name=%s  dir=%s",

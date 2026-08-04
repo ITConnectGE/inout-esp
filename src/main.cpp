@@ -76,7 +76,7 @@ void handleTap(const String& uid, CardDirection dir) {
     String dirStr = (Config.directionMode == "toggle") ? "" : (dir == DIR_IN ? "in" : "out");
     digitalWrite(DEFAULT_LED3, HIGH);
     Lcd.showTap(r.granted, r.name, dirStr);
-    if (r.granted) { feedbackGranted(); Relay.open(r.openMs); CamUart.capture(uid); }
+    if (r.granted) { feedbackGranted(); Relay.open(r.openMs); CamUart.capture(uid, r.happenedAt); }
     else           { feedbackDenied(); }
     delay(40); digitalWrite(DEFAULT_LED3, LOW);
 }

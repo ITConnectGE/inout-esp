@@ -586,18 +586,31 @@ public:
         server.streamFile(f, mime(path)); f.close(); return true;
     }
 
-    // Save a JPEG from ESP32-CAM; path: /photos/<uid>_<YYYYMMDD_HHMMSS>.jpg
-    bool savePhoto(const String& uid, const uint8_t* data, size_t len) {
+    // Save a JPEG from ESP32-CAM; path: /photos/<uid>_<YYYYMMDD>_<HHMMSS>.jpg
+    // happenedAt: ISO timestamp from the event log (e.g. "2026-08-04T14:30:22Z").
+    // When provided, the photo filename is derived from it so it matches exactly.
+    bool savePhoto(const String& uid, const uint8_t* data, size_t len,
+                   const String& happenedAt = "") {
         if (!_mounted || len == 0) return false;
         char path[72];
-        struct tm t;
-        if (getLocalTime(&t, 50))
-            snprintf(path, sizeof(path), "/photos/%s_%04d%02d%02d_%02d%02d%02d.jpg",
-                     uid.c_str(),
-                     t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
-                     t.tm_hour, t.tm_min, t.tm_sec);
-        else
-            snprintf(path, sizeof(path), "/photos/%s_%lu.jpg", uid.c_str(), millis());
+        if (happenedAt.length() >= 19) {
+            // Derive filename from the same timestamp used in the event log.
+            String d = happenedAt.substring(0,4)  + happenedAt.substring(5,7)
+                     + happenedAt.substring(8,10);                    // YYYYMMDD
+            String t = happenedAt.substring(11,13) + happenedAt.substring(14,16)
+                     + happenedAt.substring(17,19);                   // HHMMSS
+            snprintf(path, sizeof(path), "/photos/%s_%s_%s.jpg",
+                     uid.c_str(), d.c_str(), t.c_str());
+        } else {
+            struct tm t;
+            if (getLocalTime(&t, 50))
+                snprintf(path, sizeof(path), "/photos/%s_%04d%02d%02d_%02d%02d%02d.jpg",
+                         uid.c_str(),
+                         t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                         t.tm_hour, t.tm_min, t.tm_sec);
+            else
+                snprintf(path, sizeof(path), "/photos/%s_%lu.jpg", uid.c_str(), millis());
+        }
 
         File f = SD.open(path, FILE_WRITE);
         if (!f) {

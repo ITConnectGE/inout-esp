@@ -63,8 +63,9 @@ public:
     bool isReady() { return _ready; }
 
     // Trigger capture; saves JPEG to SD as /photos/<uid>_<timestamp>.jpg
-    // Returns true on success. Called from handleTap() after relay opens.
-    bool capture(const String& uid) {
+    // happenedAt should be the same ISO timestamp logged for the card event so
+    // the photo filename matches and can be correlated during batch sync.
+    bool capture(const String& uid, const String& happenedAt = "") {
         if (!_ready) return false;
 
         while (Serial2.available()) Serial2.read();
@@ -105,7 +106,7 @@ public:
             return false;
         }
 
-        bool ok = SdManager.savePhoto(uid, buf, len);
+        bool ok = SdManager.savePhoto(uid, buf, len, happenedAt);
         free(buf);
         return ok;
     }
