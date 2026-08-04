@@ -333,7 +333,9 @@ public:
         File entry;
         while ((entry = dir.openNextFile())) {
             if (!entry.isDirectory()) {
-                String p = String(entry.name());
+                String n = String(entry.name());
+                // entry.name() may return just the filename or full path depending on SD lib version
+                String p = n.startsWith("/") ? n : "/photos/" + n;
                 if (p.endsWith(".jpg")) paths.push_back(p);
             }
             entry.close();
