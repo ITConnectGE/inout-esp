@@ -53,6 +53,7 @@ struct ConfigData {
     int    buzzPin;
     int    relayMs;
     int    configVersion;
+    String directionMode = "in"; // "in", "out", or "toggle" — refreshed from server on sync
 
     void load() {
         Preferences p; p.begin("cp", true);

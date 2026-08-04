@@ -88,7 +88,7 @@ public:
         GeorgianLcd.begin(_lcd);         // no icons — all 8 CGRAM slots free for Georgian glyphs
         _found = true;
         // Show clean boot message
-        printLine(0, "  InOut v0.3.2");
+        printLine(0, "  InOut v0.4.0");
         printLine(1, "  Starting...   ");
         _lastClockMs = millis();
     }
@@ -123,11 +123,15 @@ public:
         }
     }
 
-    void showTap(bool granted, const String& name) {
+    // dir: "in", "out", or "" (empty = don't show direction)
+    void showTap(bool granted, const String& name, const String& dir = "") {
         if (!_found) return;
         _lcd->clear();
         delay(5);
-        printLine(0, granted ? "OK GRANTED" : "NO DENIED");
+        String line0 = granted ? "OK GRANTED" : "NO DENIED";
+        if      (dir == "in")  line0 += " IN";
+        else if (dir == "out") line0 += " OUT";
+        printLine(0, line0);
         GeorgianLcd.startScroll(1, LCD_COLS, name.length() > 0 ? name : "Unknown card");
         _showingTap = true;
         _tapShownAt = millis();
@@ -138,7 +142,7 @@ public:
 
     void showBoot(const String& msg) {
         if (!_found) return;
-        printLine(0, "  InOut v0.3.2");
+        printLine(0, "  InOut v0.4.0");
         printLine(1, msg.substring(0, LCD_COLS));
     }
 

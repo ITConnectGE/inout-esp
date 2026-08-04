@@ -82,94 +82,6 @@ private:
         return prefix + body.substring(0, 120);
     }
 
-    // Parse uid and ISO happened_at from a photo base-name (no path, no extension).
-    // Expects format: <uid>_<YYYYMMDD>_<HHMMSS>  e.g. "04A2B3C4_20260804_143022"
-    // Returns false for millis-only names like "04A2B3C4_1234567".
-    bool parsePhotoFilename(const String& base, String& uid, String& happenedAt) {
-        int last = base.lastIndexOf('_');
-        int prev = last > 0 ? base.lastIndexOf('_', last - 1) : -1;
-        if (prev < 0 || prev == last) return false;
-        String timeStr = base.substring(last + 1); // "143022"
-        String dateStr = base.substring(prev + 1, last); // "20260804"
-        if (dateStr.length() != 8 || timeStr.length() != 6) return false;
-        for (char c : dateStr) if (!isdigit(c)) return false;
-        for (char c : timeStr) if (!isdigit(c)) return false;
-        uid = base.substring(0, prev);
-        happenedAt = dateStr.substring(0,4) + "-" + dateStr.substring(4,6) + "-" + dateStr.substring(6,8)
-                   + "T" + timeStr.substring(0,2) + ":" + timeStr.substring(2,4) + ":" + timeStr.substring(4,6) + "Z";
-        return true;
-    }
-
-    // Read JPEG from SD and POST as multipart/form-data to /device/events.
-    // Returns true on HTTP 200/201.
-    bool uploadPhoto(const String& path) {
-        String fullName = path.substring(path.lastIndexOf('/') + 1);
-        String base = fullName.endsWith(".jpg")
-                    ? fullName.substring(0, fullName.length() - 4)
-                    : fullName;
-        String uid, happenedAt;
-        if (!parsePhotoFilename(base, uid, happenedAt)) {
-            Logger.log(LOG_WARN, "PHOTO", "Skipping (millis-only filename)", path);
-            return false;
-        }
-
-        File f = SD.open(path, FILE_READ);
-        if (!f) { Logger.log(LOG_WARN, "PHOTO", "Cannot open for upload", path); return false; }
-        size_t fileSize = f.size();
-        if (fileSize == 0 || fileSize > 200000) {
-            f.close();
-            Logger.logf(LOG_WARN, "PHOTO", "Skipping (size=%u)", (unsigned)fileSize);
-            return false;
-        }
-
-        const char* boundary = "----ESP32Bnd7a3f";
-        String preamble = "--"; preamble += boundary; preamble += "\r\n"
-            "Content-Disposition: form-data; name=\"uid\"\r\n\r\n" + uid + "\r\n"
-            "--"; preamble += boundary; preamble += "\r\n"
-            "Content-Disposition: form-data; name=\"happened_at\"\r\n\r\n" + happenedAt + "\r\n"
-            "--"; preamble += boundary; preamble += "\r\n"
-            "Content-Disposition: form-data; name=\"photo\"; filename=\"photo.jpg\"\r\n"
-            "Content-Type: image/jpeg\r\n\r\n";
-        String postamble = "\r\n--"; postamble += boundary; postamble += "--\r\n";
-
-        size_t totalLen = preamble.length() + fileSize + postamble.length();
-        uint8_t* body = (uint8_t*)malloc(totalLen);
-        if (!body) {
-            f.close();
-            Logger.logf(LOG_WARN, "PHOTO", "OOM (%u bytes needed)", (unsigned)totalLen);
-            return false;
-        }
-        memcpy(body, preamble.c_str(), preamble.length());
-        size_t got = f.read(body + preamble.length(), fileSize);
-        f.close();
-        if (got != fileSize) {
-            free(body);
-            Logger.logf(LOG_WARN, "PHOTO", "Short read %u/%u", (unsigned)got, (unsigned)fileSize);
-            return false;
-        }
-        memcpy(body + preamble.length() + fileSize, postamble.c_str(), postamble.length());
-
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) { free(body); return false; }
-        HTTPClient http;
-        http.begin(Config.serverUrl + "/device/events");
-        http.setTimeout(20000);
-        auth(http);
-        String ct = "multipart/form-data; boundary="; ct += boundary;
-        http.addHeader("Content-Type", ct);
-        int code = http.POST(body, totalLen);
-        String respBody = http.getString();
-        http.end();
-        xSemaphoreGiveRecursive(_mutex);
-        free(body);
-
-        if (code == 200 || code == 201) {
-            Logger.logf(LOG_INFO, "PHOTO", "Uploaded %s (%u bytes)", path.c_str(), (unsigned)fileSize);
-            return true;
-        }
-        Logger.log(LOG_WARN, "PHOTO", "Upload failed: " + path, serverErrMsg(code, respBody));
-        return false;
-    }
-
 public:
     // Persist UTC epoch to SD so reboots start with an approximate clock.
     void saveTimeToSD() {
@@ -236,8 +148,10 @@ public:
         resp.granted = resp.name.length() > 0;
         resp.openMs  = Config.relayMs;
         resp.reason  = resp.granted ? "ok" : "card_unknown";
+        String logDir = (Config.directionMode == "toggle")
+                        ? "unknown" : (dir == DIR_IN ? "in" : "out");
         SdManager.logEvent(uid, resp.name,
-                           dir == DIR_IN ? "in" : "out",
+                           logDir,
                            resp.granted ? "granted" : "denied",
                            nowIso(),
                            resp.reason);
@@ -285,30 +199,126 @@ public:
         if (!serverReachable()) return -1;
         int n = SdManager.unsyncedCount();
         if (n == 0) return 0;
-        JsonDocument doc;
-        JsonArray arr = doc["events"].to<JsonArray>();
-        if (!SdManager.getUnsyncedEvents(arr, 50)) {
-            // All pending events have bad timestamps — drop to unblock future syncs.
+
+        // Collect up to 10 events — smaller batch leaves heap headroom for photos.
+        JsonDocument evDoc;
+        JsonArray arr = evDoc["events"].to<JsonArray>();
+        if (!SdManager.getUnsyncedEvents(arr, 10)) {
             Logger.logf(LOG_WARN, "SYNC", "Dropping %d unsendable events (bad timestamps)", n);
             SdManager.markAllSynced();
             return 0;
         }
         int batchSize = (int)arr.size();
-        String body; serializeJson(doc, body);
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
-            Logger.log(LOG_ERROR, "SYNC", "Events sync: mutex timeout");
-            return -1;
+        const char* boundary = "----ESP32Bnd9f2a";
+
+        // ── Build text fields for all events ───────────────────────────────────
+        String textPart;
+        textPart.reserve(batchSize * 320);
+        for (int i = 0; i < batchSize; i++) {
+            JsonObject ev = arr[i];
+            String uid = ev["uid"] | "";
+            String ts  = ev["happened_at"] | "";
+            String dec = ev["decision"] | "denied";
+            String dir = (Config.directionMode == "toggle")
+                         ? "unknown" : String(ev["direction"] | "unknown");
+            String rsn = ev["reason"] | "";
+            auto fld = [&](const String& nm, const String& val) {
+                textPart += "--"; textPart += boundary; textPart += "\r\n"
+                    "Content-Disposition: form-data; name=\""; textPart += nm;
+                textPart += "\"\r\n\r\n"; textPart += val; textPart += "\r\n";
+            };
+            fld("events[" + String(i) + "][uid]", uid);
+            fld("events[" + String(i) + "][happened_at]", ts);
+            fld("events[" + String(i) + "][decision]", dec);
+            fld("events[" + String(i) + "][direction]", dir);
+            if (rsn.length()) fld("events[" + String(i) + "][reason]", rsn);
         }
+
+        // ── Find matching photos; include those that fit in free heap ──────────
+        struct PInfo { String path; String hdr; size_t size; bool ok = false; };
+        PInfo photos[10];
+        size_t photoByteTotal = 0;
+        // Reserve 80 KB headroom for stack, HTTPClient, and JSON buffers.
+        size_t budget = ESP.getFreeHeap() > 80000 ? ESP.getFreeHeap() - 80000 : 0;
+
+        for (int i = 0; i < batchSize; i++) {
+            String uid = arr[i]["uid"] | "";
+            String ts  = arr[i]["happened_at"] | "";
+            photos[i].path = SdManager.getPhotoForEvent(uid, ts);
+            if (photos[i].path.isEmpty()) continue;
+            File pf = SD.open(photos[i].path, FILE_READ);
+            if (!pf) { photos[i].path = ""; continue; }
+            photos[i].size = pf.size(); pf.close();
+            if (photos[i].size == 0 || photos[i].size > 250000)
+                { photos[i].path = ""; continue; }
+            photos[i].hdr  = "--"; photos[i].hdr += boundary;
+            photos[i].hdr += "\r\nContent-Disposition: form-data; name=\"photos[";
+            photos[i].hdr += String(i);
+            photos[i].hdr += "]\"; filename=\"p.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+            size_t needed = photos[i].hdr.length() + photos[i].size + 2; // +2 \r\n
+            if (textPart.length() + photoByteTotal + needed < budget) {
+                photos[i].ok = true;
+                photoByteTotal += needed;
+            }
+        }
+
+        // ── Allocate and fill multipart body ───────────────────────────────────
+        String tail = "--"; tail += boundary; tail += "--\r\n";
+        size_t totalLen = textPart.length() + photoByteTotal + tail.length();
+        uint8_t* body = (uint8_t*)malloc(totalLen);
+        if (!body) {
+            // Not enough contiguous heap — send without photos.
+            Logger.logf(LOG_WARN, "SYNC", "OOM (%u B) — sending events without photos",
+                        (unsigned)totalLen);
+            for (int i = 0; i < batchSize; i++) photos[i].ok = false;
+            photoByteTotal = 0;
+            totalLen = textPart.length() + tail.length();
+            body = (uint8_t*)malloc(totalLen);
+            if (!body) {
+                Logger.log(LOG_ERROR, "SYNC", "Events sync: OOM, skipping");
+                return -1;
+            }
+        }
+
+        size_t pos = 0;
+        memcpy(body + pos, textPart.c_str(), textPart.length()); pos += textPart.length();
+        for (int i = 0; i < batchSize; i++) {
+            if (!photos[i].ok) continue;
+            memcpy(body + pos, photos[i].hdr.c_str(), photos[i].hdr.length());
+            pos += photos[i].hdr.length();
+            File pf = SD.open(photos[i].path, FILE_READ);
+            if (pf) { pos += pf.read(body + pos, photos[i].size); pf.close(); }
+            body[pos++] = '\r'; body[pos++] = '\n';
+        }
+        memcpy(body + pos, tail.c_str(), tail.length()); pos += tail.length();
+
+        // ── POST ───────────────────────────────────────────────────────────────
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) { free(body); return -1; }
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/events/batch");
-        http.setTimeout(8000); auth(http);
-        int code = http.POST(body);
-        String respBody = http.getString(); http.end();
+        http.setTimeout(30000);
+        http.addHeader("Authorization", "Bearer " + Config.deviceToken);
+        http.addHeader("Accept",        "application/json");
+        http.addHeader("X-Device-ID",   Config.identifier);
+        String ct = "multipart/form-data; boundary="; ct += boundary;
+        http.addHeader("Content-Type", ct);
+        int code = http.POST(body, pos);
+        String respBody = code > 0 ? http.getString() : "";
+        http.end();
         xSemaphoreGiveRecursive(_mutex);
+        free(body);
+
         if (code == 200 || code == 201) {
-            SdManager.markAllSynced();
-            Logger.logf(LOG_INFO, "SYNC", "Events synced: %d of %d record(s)", batchSize, n);
-            return n;
+            SdManager.markNEventsSynced(batchSize);
+            int nPhotos = 0;
+            for (int i = 0; i < batchSize; i++) {
+                // Delete photos for this batch regardless of whether they were
+                // included — events are now synced so photos would be orphaned.
+                if (!photos[i].path.isEmpty()) { SD.remove(photos[i].path.c_str()); nPhotos++; }
+            }
+            Logger.logf(LOG_INFO, "SYNC", "Events synced: %d (of %d), photos: %d",
+                        batchSize, n, nPhotos);
+            return batchSize;
         }
         Logger.log(LOG_ERROR, "SYNC", "Events sync failed", serverErrMsg(code, respBody));
         return -1;
@@ -341,6 +351,7 @@ public:
         if (!deserializeJson(doc, payload)) {
             if (!doc["relay_ms"].isNull())       Config.relayMs       = doc["relay_ms"];
             if (!doc["config_version"].isNull()) Config.configVersion = doc["config_version"];
+            if (!doc["direction_mode"].isNull()) Config.directionMode = doc["direction_mode"].as<String>();
             Config.save();
         }
         bool ok = SdManager.updateWhitelist(payload);
@@ -360,7 +371,7 @@ public:
         http.begin(Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
-        doc["firmware"]        = "0.3.2";
+        doc["firmware"]        = "0.4.0";
         doc["ip"]              = WiFi.localIP().toString();
         doc["rssi"]            = WiFi.RSSI();
         doc["config_version"]  = Config.configVersion;
@@ -386,36 +397,6 @@ public:
             Logger.log(LOG_INFO, "SYNC", "Server requested resync via heartbeat");
             syncWhitelist();
         }
-    }
-
-    void uploadPendingPhotos() {
-        if (!serverReachable() || !SdManager.isMounted()) return;
-        File dir = SD.open("/photos");
-        if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return; }
-
-        std::vector<String> paths;
-        File entry;
-        while ((entry = dir.openNextFile())) {
-            if (!entry.isDirectory()) {
-                String n = String(entry.name());
-                // entry.name() may return just the filename or full path depending on SD lib version
-                String p = n.startsWith("/") ? n : "/photos/" + n;
-                if (p.endsWith(".jpg")) paths.push_back(p);
-            }
-            entry.close();
-        }
-        dir.close();
-
-        if (paths.empty()) return;
-        Logger.logf(LOG_INFO, "PHOTO", "Uploading %d pending photo(s)", (int)paths.size());
-
-        int ok = 0, fail = 0;
-        for (const String& p : paths) {
-            if (uploadPhoto(p)) { SD.remove(p.c_str()); ok++; }
-            else fail++;
-            vTaskDelay(pdMS_TO_TICKS(200));
-        }
-        Logger.logf(LOG_INFO, "PHOTO", "Done: %d uploaded, %d failed", ok, fail);
     }
 
     int proxy(const String& method, const String& path,

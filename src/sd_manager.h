@@ -499,6 +499,37 @@ public:
         f.close(); return n > 0;
     }
 
+    // Return the SD path of a photo that matches uid + ISO timestamp, or "" if not found.
+    // Photo filename format: /photos/<uid>_<YYYYMMDD>_<HHMMSS>.jpg
+    String getPhotoForEvent(const String& uid, const String& ts) {
+        if (!_mounted || uid.isEmpty() || ts.length() < 19) return "";
+        String dateStr = ts.substring(0,4) + ts.substring(5,7) + ts.substring(8,10);
+        String timeStr = ts.substring(11,13) + ts.substring(14,16) + ts.substring(17,19);
+        String path = "/photos/" + uid + "_" + dateStr + "_" + timeStr + ".jpg";
+        return SD.exists(path) ? path : "";
+    }
+
+    // Mark the first n unsynced events in events.log as synced (in file order).
+    void markNEventsSynced(int n) {
+        if (!_mounted || !SD.exists(EVENTS_LOG) || n <= 0) return;
+        String tmp = "/data/ev.tmp";
+        File src = SD.open(EVENTS_LOG, FILE_READ);
+        File dst = SD.open(tmp, FILE_WRITE);
+        if (!src || !dst) { if(src)src.close(); if(dst)dst.close(); return; }
+        int marked = 0;
+        while (src.available()) {
+            String l = src.readStringUntil('\n'); l.trim();
+            if (l.length() < 5) continue;
+            if (marked < n && l.indexOf("\"synced\":false") >= 0) {
+                l.replace("\"synced\":false", "\"synced\":true");
+                marked++;
+            }
+            dst.println(l);
+        }
+        src.close(); dst.close();
+        SD.remove(EVENTS_LOG); SD.rename(tmp, EVENTS_LOG);
+    }
+
     void markAllSynced() {
         if (!_mounted || !SD.exists(EVENTS_LOG)) return;
         String tmp = "/data/ev.tmp";

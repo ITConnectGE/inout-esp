@@ -1,5 +1,5 @@
 /**
- * InOut Firmware v0.3.2
+ * InOut Firmware v0.4.0
  * ESP32-WROOM32 · 2x PN532 · SD card · Relay · Buzzer · LEDs · LCD 16x2
  *
  * Single VSPI bus (SCK=18 MISO=19 MOSI=23) shared by PN532 readers + SD card.
@@ -72,8 +72,10 @@ void handleTap(const String& uid, CardDirection dir) {
         return;
     }
     ApiResponse r = ApiClient.processCard(uid, dir);
+    // For toggle mode the device can't determine direction locally — leave blank on LCD.
+    String dirStr = (Config.directionMode == "toggle") ? "" : (dir == DIR_IN ? "in" : "out");
     digitalWrite(DEFAULT_LED3, HIGH);
-    Lcd.showTap(r.granted, r.name);
+    Lcd.showTap(r.granted, r.name, dirStr);
     if (r.granted) { feedbackGranted(); Relay.open(r.openMs); CamUart.capture(uid); }
     else           { feedbackDenied(); }
     delay(40); digitalWrite(DEFAULT_LED3, LOW);
@@ -93,7 +95,6 @@ void syncTask(void*) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         ApiClient.syncEvents();
         ApiClient.syncEmployees();
-        ApiClient.uploadPendingPhotos();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
@@ -106,7 +107,7 @@ void syncTask(void*) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200); delay(300);
-    Serial.println("\n[INFO][SYS] InOut v0.3.2 booting");
+    Serial.println("\n[INFO][SYS] InOut v0.4.0 booting");
 
     Logger.begin();
 
@@ -126,7 +127,7 @@ void setup() {
     bool sdOk = SdManager.begin();
     if (sdOk) {
         Logger.setSDReady(true);
-        Logger.log(LOG_INFO, "SYS", "InOut v0.3.2 boot — SD ready");
+        Logger.log(LOG_INFO, "SYS", "InOut v0.4.0 boot — SD ready");
     }
 
     // ── 3. Auth (requires SD) ─────────────────────────────────────────────────
