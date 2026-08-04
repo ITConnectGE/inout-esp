@@ -474,6 +474,22 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
           </div>
 
           <div class="card">
+            <div class="card-hd"><h2>Device time</h2><span id="lbl-ntp-chip"></span></div>
+            <div style="border-bottom:1px solid var(--border)"></div>
+            <div class="setup-field setup-field-row">
+              <span style="font-size:13px;color:var(--muted)">Current time</span>
+              <span id="lbl-device-time" style="font-family:ui-monospace,monospace;font-size:13px">—</span>
+            </div>
+            <div class="setup-field">
+              <label>Set time manually <span style="font-weight:400;color:var(--hint)">— used when NTP unavailable</span></label>
+              <input type="datetime-local" id="f-time" step="1">
+            </div>
+            <div style="padding:11px 15px">
+              <button class="btn btn-primary" style="width:100%" onclick="setDeviceTime()">Set device time</button>
+            </div>
+          </div>
+
+          <div class="card">
             <div class="card-hd"><h2>Hardware pins</h2><span style="font-size:11px;color:var(--muted)">Requires reboot</span></div>
             <div style="border-bottom:1px solid var(--border)"></div>
             <div class="setup-field"><label>CS IN reader</label><input type="number" id="f-csin" min="0" max="39" placeholder="4"></div>
@@ -491,20 +507,23 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
           </div>
 
           <div class="card">
-            <div class="card-hd"><h2>Reader assignment</h2></div>
+            <div class="card-hd"><h2>Reader roles</h2></div>
             <div style="border-bottom:1px solid var(--border)"></div>
             <div style="padding:12px 15px">
-              <div style="font-size:13px;margin-bottom:10px">
-                <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-                  <span style="color:var(--muted)">IN reader</span>
-                  <span style="font-family:ui-monospace,monospace;font-size:12px" id="lbl-cs-in">GPIO —</span>
+              <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;margin-bottom:12px">
+                <div style="border:2px solid var(--blue);border-radius:var(--r);padding:12px 8px;text-align:center">
+                  <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Entry</div>
+                  <div style="font-size:20px;font-weight:600">→ IN</div>
+                  <div id="lbl-cs-in" style="font-size:10px;color:var(--hint);font-family:monospace;margin-top:4px">GPIO —</div>
                 </div>
-                <div style="display:flex;justify-content:space-between">
-                  <span style="color:var(--muted)">OUT reader</span>
-                  <span style="font-family:ui-monospace,monospace;font-size:12px" id="lbl-cs-out">GPIO —</span>
+                <div style="color:var(--muted);font-size:18px;text-align:center">⇄</div>
+                <div style="border:1px solid var(--border);border-radius:var(--r);padding:12px 8px;text-align:center">
+                  <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Exit</div>
+                  <div style="font-size:20px;font-weight:600">OUT →</div>
+                  <div id="lbl-cs-out" style="font-size:10px;color:var(--hint);font-family:monospace;margin-top:4px">GPIO —</div>
                 </div>
               </div>
-              <button class="btn btn-sm" style="width:100%" onclick="confirmSwapReaders()">⇄ Swap IN / OUT readers</button>
+              <button class="btn btn-sm" style="width:100%" onclick="swapReaders()">⇄ Swap IN / OUT roles</button>
             </div>
           </div>
 
@@ -1399,30 +1418,33 @@ function fmtTsLocal(ts) {
 }
 
 // ── Reader swap ───────────────────────────────────────────────────────────────
-function confirmSwapReaders() {
-  const csIn  = S.status?.cs_in  ?? '?';
-  const csOut = S.status?.cs_out ?? '?';
-  if (!confirm(
-    `Swap IN and OUT readers?
-
-Current:
-  IN  → GPIO ${csIn}
-  OUT → GPIO ${csOut}
-
-After swap:
-  IN  → GPIO ${csOut}
-  OUT → GPIO ${csIn}
-
-Device will save new config. Card readers will swap roles immediately.`
-  )) return;
-  const newIn  = S.status?.cs_out;
-  const newOut = S.status?.cs_in;
-  lpost('/api/config', { cs_in: newIn, cs_out: newOut }).then(r => {
-    if (r?.ok) {
-      toast('Readers swapped ✓ — reboot to apply');
-      setTimeout(() => loadAll(), 800);
-    } else toast('Error: ' + (r?.error || 'failed'));
+function swapReaders() {
+  if (!confirm('Swap IN and OUT reader roles?')) return;
+  lpost('/api/config', { cs_in: S.status?.cs_out, cs_out: S.status?.cs_in }).then(r => {
+    if (r?.ok) { toast('Readers swapped ✓ — reboot to apply'); setTimeout(() => loadAll(), 800); }
+    else toast('Error: ' + (r?.error || 'failed'));
   });
+}
+
+// ── Device time ────────────────────────────────────────────────────────────────
+async function loadDeviceTime() {
+  const r = await lg('/api/time');
+  if (!r) return;
+  const el  = document.getElementById('lbl-device-time');
+  const chip = document.getElementById('lbl-ntp-chip');
+  if (el)   el.textContent = r.ts ? r.ts.replace('T',' ') : '—';
+  if (chip) chip.innerHTML = r.ntp
+    ? '<span style="font-size:11px;padding:2px 8px;background:var(--green-bg,#d1fae5);color:var(--green-tx,#065f46);border-radius:99px">NTP synced</span>'
+    : '<span style="font-size:11px;padding:2px 8px;background:var(--yellow-bg,#fef3c7);color:var(--yellow-tx,#92400e);border-radius:99px">Not synced</span>';
+  const inp = document.getElementById('f-time');
+  if (inp && r.ts && !inp.value) inp.value = r.ts.substring(0, 19);
+}
+async function setDeviceTime() {
+  const ts = document.getElementById('f-time')?.value;
+  if (!ts) { toast('Pick a date/time first'); return; }
+  const r = await lpost('/api/time', { ts });
+  if (r?.ok) { toast('Time set ✓'); loadDeviceTime(); }
+  else toast('Error: ' + (r?.error || 'failed'));
 }
 
 // ── Edit employee ─────────────────────────────────────────────────────────────
@@ -1565,6 +1587,7 @@ function nav(page,btn){
   else document.querySelectorAll('.ni').forEach(n=>{if(n.textContent.trim().toLowerCase().startsWith(page.slice(0,5)))n.classList.add('active');});
   if(page==='events'){const nb=document.getElementById('nb');if(nb)nb.style.display='none';}
   if(page==='devlog')loadDevLog();
+  if(page==='setup')loadDeviceTime();
   closeSidebar();
 }
 function closeModal(id){document.getElementById(id).classList.remove('show');}
