@@ -24,6 +24,7 @@
 #include <map>
 
 #include "config.h"
+#include "logger.h"
 #include "relay.h"
 #include "nfc_reader.h"
 #include "sd_manager.h"
@@ -92,6 +93,7 @@ void syncTask(void*) {
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
+        Logger.trimLog();
         ApiClient.sendHeartbeat();
         Lcd.setFallback(WiFi.localIP().toString());
     }
@@ -100,7 +102,9 @@ void syncTask(void*) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200); delay(300);
-    Serial.println("\n[InOut] v0.3.2 booting");
+    Serial.println("\n[INFO][SYS] InOut v0.3.2 booting");
+
+    Logger.begin();
 
     for (int p : {DEFAULT_LED1, DEFAULT_LED2, DEFAULT_LED3}) {
         pinMode(p, OUTPUT); digitalWrite(p, LOW);
@@ -115,13 +119,17 @@ void setup() {
 
     // ── 2. SD on HSPI ────────────────────────────────────────────────────────
     delay(500);  // SD power rail stabilize
-    SdManager.begin();
+    bool sdOk = SdManager.begin();
+    if (sdOk) {
+        Logger.setSDReady(true);
+        Logger.log(LOG_INFO, "SYS", "InOut v0.3.2 boot — SD ready");
+    }
 
     // ── 3. Auth (requires SD) ─────────────────────────────────────────────────
     if (SdManager.isMounted()) {
         AuthManager.begin();
     } else {
-        Serial.println("[Auth] SD not mounted — auth unavailable");
+        Logger.log(LOG_ERROR, "AUTH", "SD not mounted — auth and persistent logging unavailable");
     }
 
     // ── 4. LCD on I2C ─────────────────────────────────────────────────────────
@@ -150,11 +158,12 @@ void setup() {
     wm.addParameter(&pToken);
 
     if (!wm.autoConnect("InOut-Setup")) {
+        Logger.log(LOG_ERROR, "WIFI", "autoConnect timed out — restarting");
         Lcd.showBoot("WiFi failed!");
         delay(2000); ESP.restart();
     }
     digitalWrite(DEFAULT_LED2, LOW);
-    Serial.println("[WiFi] " + WiFi.localIP().toString());
+    Logger.log(LOG_INFO, "WIFI", "Connected", WiFi.localIP().toString() + "  RSSI=" + String(WiFi.RSSI()) + "dBm");
     Lcd.setFallback(WiFi.localIP().toString());
 
     if (strlen(pServer.getValue()) > 0) {
@@ -168,7 +177,7 @@ void setup() {
     // Apply saved timezone
     setenv("TZ", Config.getPosixTz().c_str(), 1);
     tzset();
-    Serial.println("[TZ] " + Config.timezone + " → " + Config.getPosixTz());
+    Logger.log(LOG_INFO, "SYS", "TZ: " + Config.timezone + " → " + Config.getPosixTz());
     WebServerManager.begin();
 
     // ── 9. ESP32-CAM on UART2 ────────────────────────────────────────────────
@@ -179,11 +188,15 @@ void setup() {
 
     feedbackBoot();
     Lcd.showReady();
-    Serial.printf("[InOut] Ready  IN:%s OUT:%s  SD:%s  LCD:%s\n",
-                  NfcReader.isOk(READER_IN)  ? "OK" : "FAIL",
-                  NfcReader.isOk(READER_OUT) ? "OK" : "FAIL",
-                  SdManager.isMounted()       ? "OK" : "NO CARD",
-                  _lcdFound                   ? "OK" : "NOT FOUND");
+    bool inOk  = NfcReader.isOk(READER_IN);
+    bool outOk = NfcReader.isOk(READER_OUT);
+    if (!inOk)  Logger.log(LOG_ERROR, "NFC", "IN reader not found", "CS=GPIO" + String(Config.csPin_IN));
+    if (!outOk) Logger.log(LOG_ERROR, "NFC", "OUT reader not found", "CS=GPIO" + String(Config.csPin_OUT));
+    Logger.logf(LOG_INFO, "SYS", "Ready  IN:%s OUT:%s  SD:%s  LCD:%s",
+                inOk                    ? "OK" : "FAIL",
+                outOk                   ? "OK" : "FAIL",
+                SdManager.isMounted()   ? "OK" : "NO CARD",
+                _lcdFound               ? "OK" : "NOT FOUND");
 }
 
 // ── Loop ─────────────────────────────────────────────────────────────────────

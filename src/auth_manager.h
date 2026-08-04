@@ -29,6 +29,7 @@
 #include <ArduinoJson.h>
 #include <mbedtls/sha256.h>
 #include <map>
+#include "logger.h"
 
 #define ADMINS_FILE "/data/admins.json"
 #define SESSION_TTL_MS (8UL * 60 * 60 * 1000)  // 8 hours
@@ -74,15 +75,25 @@ private:
     bool loadDoc(JsonDocument& doc) {
         if (!SD.exists(ADMINS_FILE)) return false;
         File f = SD.open(ADMINS_FILE, FILE_READ);
-        if (!f) return false;
+        if (!f) {
+            Logger.log(LOG_ERROR, "AUTH", "Cannot open admins.json");
+            return false;
+        }
         DeserializationError err = deserializeJson(doc, f);
         f.close();
-        return !err;
+        if (err) {
+            Logger.logf(LOG_ERROR, "AUTH", "admins.json parse error: %s", err.c_str());
+            return false;
+        }
+        return true;
     }
 
     bool saveDoc(JsonDocument& doc) {
         File f = SD.open(ADMINS_FILE, FILE_WRITE);
-        if (!f) return false;
+        if (!f) {
+            Logger.log(LOG_ERROR, "AUTH", "Cannot write admins.json");
+            return false;
+        }
         serializeJson(doc, f);
         f.close();
         return true;
@@ -103,9 +114,10 @@ public:
             a["created_at"]           = (long)(millis()/1000);
             File f = SD.open(ADMINS_FILE, FILE_WRITE);
             if (f) { serializeJson(doc, f); f.close(); }
-            Serial.println("[Auth] Default super admin created (admin/12345678)");
+            else Logger.log(LOG_ERROR, "AUTH", "Cannot write default admins.json");
+            Logger.log(LOG_WARN, "AUTH", "Default super admin created (admin/12345678) — change password");
         } else {
-            Serial.println("[Auth] Admins file loaded from SD");
+            Logger.log(LOG_INFO, "AUTH", "Admins loaded from SD");
         }
     }
 
@@ -114,29 +126,25 @@ public:
     String login(const String& username, const String& password, String& role, bool& mustChange) {
         JsonDocument doc;
         if (!loadDoc(doc)) {
-            Serial.println("[Auth] Login failed: could not load admins.json");
+            Logger.log(LOG_ERROR, "AUTH", "Login failed: cannot load admins.json",
+                       "user=" + username);
             return "";
         }
         String inputHash = sha256(password);
-        Serial.printf("[Auth] Login attempt: user=%s hash=%s\n",
-                      username.c_str(), inputHash.c_str());
         JsonArray arr = doc["admins"].as<JsonArray>();
-        Serial.printf("[Auth] Admins in file: %d\n", (int)arr.size());
         for (JsonObject a : arr) {
-            String storedUser = String(a["username"] | "");
-            String storedHash = String(a["password_hash"] | "");
-            Serial.printf("[Auth]   checking: user=%s hash=%s\n",
-                          storedUser.c_str(), storedHash.c_str());
-            if (storedUser == username && storedHash == inputHash) {
+            if (String(a["username"] | "") == username &&
+                String(a["password_hash"] | "") == inputHash) {
                 role       = String(a["role"] | "admin");
                 mustChange = a["must_change_password"] | false;
                 String token = makeToken();
                 _sessions[token] = { username, role, millis() + SESSION_TTL_MS };
-                Serial.printf("[Auth] Login OK: %s (%s)\n", username.c_str(), role.c_str());
+                Logger.logf(LOG_INFO, "AUTH", "Login OK: %s (%s)",
+                            username.c_str(), role.c_str());
                 return token;
             }
         }
-        Serial.printf("[Auth] Login FAILED for: %s\n", username.c_str());
+        Logger.log(LOG_WARN, "AUTH", "Login FAILED", "user=" + username);
         return "";
     }
 

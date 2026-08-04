@@ -244,6 +244,9 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
 
 @media(max-width:500px){.hide-xs{display:none}tbody td,thead th{padding:8px 10px}}
 
+/* Device log */
+.log-detail{font-family:ui-monospace,monospace;font-size:10px;color:var(--muted);margin-top:2px;word-break:break-all;white-space:pre-wrap;max-width:460px}
+
 /* Photos */
 .photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:2px}
 .photo-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rsm);overflow:hidden;transition:box-shadow .15s;position:relative}
@@ -533,6 +536,28 @@ button,a.btn{font-family:inherit;cursor:pointer;border:none;outline:none;text-de
             </div>
           </div>
           <div id="photo-grid-wrap"></div>
+        </div>
+
+        <!-- Device log (super admin only) -->
+        <div class="page" id="page-devlog">
+          <div class="card">
+            <div class="card-hd"><h2>Device log</h2>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <select id="log-lvl" onchange="renderDevLog()" style="padding:5px 8px;border-radius:var(--rsm);border:1px solid var(--border2);background:var(--surface);color:var(--text);font-size:12px;font-family:inherit;outline:none">
+                  <option value="">All levels</option>
+                  <option value="INFO">INFO</option>
+                  <option value="WARN">WARN</option>
+                  <option value="ERROR">ERROR</option>
+                </select>
+                <button class="btn btn-sm" onclick="loadDevLog()">Refresh</button>
+                <button class="btn btn-sm btn-danger" id="btn-clear-devlog" onclick="clearDevLog()">Clear log</button>
+              </div>
+            </div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th style="width:120px">Time</th><th style="width:64px">Level</th><th style="width:72px">Module</th><th>Message</th></tr></thead>
+              <tbody id="devlog-body"></tbody>
+            </table></div>
+          </div>
         </div>
 
       </div>
@@ -848,6 +873,9 @@ function buildNav(){
     </button>
     <button class="ni" onclick="nav('devices',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>Devices
+    </button>
+    <button class="ni" onclick="nav('devlog',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>Device log
     </button>`:''}`;
 }
 
@@ -1527,7 +1555,7 @@ function exportCsv(){
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
-const TITLES={dashboard:'Dashboard',events:'Events',employees:'Employees',cards:'Cards',photos:'Photos',admins:'Admin accounts',setup:'Device setup',devices:'Device info'};
+const TITLES={dashboard:'Dashboard',events:'Events',employees:'Employees',cards:'Cards',photos:'Photos',admins:'Admin accounts',setup:'Device setup',devices:'Device info',devlog:'Device log'};
 function nav(page,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
@@ -1536,6 +1564,7 @@ function nav(page,btn){
   if(btn)btn.classList.add('active');
   else document.querySelectorAll('.ni').forEach(n=>{if(n.textContent.trim().toLowerCase().startsWith(page.slice(0,5)))n.classList.add('active');});
   if(page==='events'){const nb=document.getElementById('nb');if(nb)nb.style.display='none';}
+  if(page==='devlog')loadDevLog();
   closeSidebar();
 }
 function closeModal(id){document.getElementById(id).classList.remove('show');}
@@ -1592,6 +1621,41 @@ async function deletePhoto(file){
   const r=await fetch('/api/photos/delete',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':TOKEN},body:JSON.stringify({file})});
   if(r.ok){_photos=_photos.filter(p=>p.file!==file);renderPhotos();}
   else alert('Delete failed');
+}
+
+// ── Device log ────────────────────────────────────────────────────────────────
+let _devLogs = [];
+
+async function loadDevLog() {
+  const r = await lg('/api/logs?limit=300');
+  if (r?.logs) { _devLogs = r.logs; renderDevLog(); }
+  else if (r === null) { /* auth error — handled by api() */ }
+}
+
+function renderDevLog() {
+  const lvl = document.getElementById('log-lvl')?.value || '';
+  const rows = lvl ? _devLogs.filter(l => l.level === lvl) : _devLogs;
+  const b = document.getElementById('devlog-body'); if (!b) return;
+  const badge = l => {
+    if (l === 'ERROR') return '<span class="badge b-denied">ERROR</span>';
+    if (l === 'WARN')  return '<span class="badge b-pending">WARN</span>';
+    return '<span class="badge b-synced" style="font-size:10px">INFO</span>';
+  };
+  b.innerHTML = rows.length ? rows.map(e => `
+    <tr>
+      <td style="color:var(--muted);font-size:11px;white-space:nowrap">${fmtTsLocal(e.ts||'')}</td>
+      <td>${badge(e.level||'INFO')}</td>
+      <td style="font-family:ui-monospace,monospace;font-size:11px;color:var(--blue-tx)">${e.module||'—'}</td>
+      <td style="font-size:12px">${e.msg||''}${e.detail?`<div class="log-detail">${e.detail}</div>`:''}</td>
+    </tr>`).join('') :
+    '<tr class="empty-row"><td colspan="4">No log entries</td></tr>';
+}
+
+async function clearDevLog() {
+  if (!confirm('Clear all device log entries?')) return;
+  const r = await api('DELETE', '/api/logs');
+  if (r?.ok) { _devLogs = []; renderDevLog(); toast('Log cleared'); }
+  else toast('Error: ' + (r?.data?.error || 'failed'));
 }
 
 setInterval(()=>lg('/api/local/events?limit=300').then(d=>{if(d?.events){S.events=d.events;renderDash();renderEvents();renderAll();}}),10000);

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "nfc_reader.h"
 #include "sd_manager.h"
+#include "logger.h"
 
 struct ApiResponse {
     bool   granted = false;
@@ -38,7 +39,7 @@ public:
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
         setenv("TZ", Config.getPosixTz().c_str(), 1);
         tzset();
-        Serial.println("[API] NTP requested");
+        Logger.log(LOG_INFO, "API", "NTP requested: pool.ntp.org time.nist.gov");
     }
 
     bool isNtpSynced() {
@@ -49,8 +50,8 @@ public:
             setenv("TZ", Config.getPosixTz().c_str(), 1);
             tzset();
             _ntpSynced = true;
-            Serial.printf("[NTP] Synced. Local time: %02d:%02d  TZ=%s\n",
-                          t.tm_hour, t.tm_min, Config.timezone.c_str());
+            Logger.logf(LOG_INFO, "NTP", "Synced: %02d:%02d  TZ=%s",
+                        t.tm_hour, t.tm_min, Config.timezone.c_str());
         }
         return _ntpSynced;
     }
@@ -75,10 +76,13 @@ public:
                            resp.granted ? "granted" : "denied",
                            nowIso(),
                            resp.reason);
-        Serial.printf("[Card] %s → %s (%s)\n",
-                      uid.c_str(),
-                      resp.granted ? "GRANTED" : "DENIED",
-                      resp.name.c_str());
+        if (resp.granted) {
+            Logger.logf(LOG_INFO, "CARD", "GRANTED  uid=%s  name=%s  dir=%s",
+                        uid.c_str(), resp.name.c_str(), dir == DIR_IN ? "IN" : "OUT");
+        } else {
+            Logger.logf(LOG_WARN, "CARD", "DENIED  uid=%s  reason=%s  dir=%s",
+                        uid.c_str(), resp.reason.c_str(), dir == DIR_IN ? "IN" : "OUT");
+        }
         return resp;
     }
 
@@ -87,13 +91,15 @@ public:
         JsonDocument doc;
         JsonArray arr = doc["employees"].to<JsonArray>();
         if (!SdManager.getUnsyncedEmployees(arr)) return 0;
+        int count = (int)arr.size();
         String body; serializeJson(doc, body);
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
+            Logger.log(LOG_ERROR, "SYNC", "Employees sync: mutex timeout");
+            return -1;
+        }
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/employees/batch");
         http.setTimeout(8000); auth(http);
-        String empUrl = Config.serverUrl + "/device/employees/batch";
-        Serial.printf("[Sync] POST %s\n", empUrl.c_str());
         int code = http.POST(body);
         String respBody = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
@@ -103,10 +109,13 @@ public:
                 JsonArray ids = resp["ids"].as<JsonArray>();
                 SdManager.markEmployeesSynced(ids);
             }
-            Serial.printf("[Sync] Employees synced: %d\n", (int)arr.size());
-            return (int)arr.size();
+            Logger.logf(LOG_INFO, "SYNC", "Employees synced: %d record(s)", count);
+            return count;
         }
-        Serial.printf("[Sync] Employees HTTP %d body: %s\n", code, respBody.c_str()); return -1;
+        // Truncate body to 120 chars to keep the log readable
+        String detail = "HTTP " + String(code) + " — " + respBody.substring(0, 120);
+        Logger.log(LOG_ERROR, "SYNC", "Employees sync failed", detail);
+        return -1;
     }
 
     int syncEvents() {
@@ -116,33 +125,50 @@ public:
         JsonDocument doc;
         JsonArray arr = doc["events"].to<JsonArray>();
         if (!SdManager.getUnsyncedEvents(arr, 50)) {
-            // All pending events are unsendable (bad timestamps, corrupt lines).
-            // Drop them so they don't block every future sync cycle.
+            // All pending events have bad timestamps — drop to unblock future syncs.
+            Logger.logf(LOG_WARN, "SYNC", "Dropping %d unsendable events (bad timestamps)", n);
             SdManager.markAllSynced();
             return 0;
         }
+        int batchSize = (int)arr.size();
         String body; serializeJson(doc, body);
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
+            Logger.log(LOG_ERROR, "SYNC", "Events sync: mutex timeout");
+            return -1;
+        }
         HTTPClient http;
-        String evUrl = Config.serverUrl + "/device/events/batch";
-        Serial.printf("[Sync] POST %s\n", evUrl.c_str());
-        http.begin(evUrl);
+        http.begin(Config.serverUrl + "/device/events/batch");
         http.setTimeout(8000); auth(http);
         int code = http.POST(body);
-        String evResp = http.getString(); http.end();
+        String respBody = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
-        if (code == 200 || code == 201) { SdManager.markAllSynced(); return n; }
-        Serial.printf("[Sync] Events HTTP %d body: %s\n", code, evResp.c_str()); return -1;
+        if (code == 200 || code == 201) {
+            SdManager.markAllSynced();
+            Logger.logf(LOG_INFO, "SYNC", "Events synced: %d of %d record(s)", batchSize, n);
+            return n;
+        }
+        String detail = "HTTP " + String(code) + " — " + respBody.substring(0, 120);
+        Logger.log(LOG_ERROR, "SYNC", "Events sync failed", detail);
+        return -1;
     }
 
     bool syncWhitelist() {
         if (!serverReachable()) return false;
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return false;
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
+            Logger.log(LOG_ERROR, "SYNC", "Whitelist sync: mutex timeout");
+            return false;
+        }
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/sync");
         http.setTimeout(8000); auth(http);
         int code = http.GET();
-        if (code != 200) { http.end(); xSemaphoreGiveRecursive(_mutex); return false; }
+        if (code != 200) {
+            String detail = "HTTP " + String(code);
+            if (code > 0) detail += " — " + http.getString().substring(0, 80);
+            http.end(); xSemaphoreGiveRecursive(_mutex);
+            Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed", detail);
+            return false;
+        }
         String payload = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
         JsonDocument doc;
@@ -153,12 +179,17 @@ public:
         }
         bool ok = SdManager.updateWhitelist(payload);
         SdManager.backupConfig();
+        if (ok) Logger.log(LOG_INFO, "SYNC", "Whitelist updated");
+        else    Logger.log(LOG_ERROR, "SYNC", "Whitelist update failed — bad payload format");
         return ok;
     }
 
     void sendHeartbeat() {
         if (!serverReachable()) return;
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return;
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
+            Logger.log(LOG_WARN, "API", "Heartbeat: mutex timeout");
+            return;
+        }
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
@@ -177,10 +208,17 @@ public:
             JsonDocument res;
             if (!deserializeJson(res, http.getString()))
                 resync = res["resync"] | false;
+        } else if (code != -1) {
+            Logger.logf(LOG_WARN, "API", "Heartbeat HTTP %d", code);
+        } else {
+            Logger.log(LOG_WARN, "API", "Heartbeat: no response (connection failed)");
         }
         http.end();
         xSemaphoreGiveRecursive(_mutex);
-        if (resync) syncWhitelist();
+        if (resync) {
+            Logger.log(LOG_INFO, "SYNC", "Server requested resync via heartbeat");
+            syncWhitelist();
+        }
     }
 
     int proxy(const String& method, const String& path,

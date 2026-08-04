@@ -50,6 +50,7 @@
 #include "sd_manager.h"
 #include "api_client.h"
 #include "auth_manager.h"
+#include "logger.h"
 #include "page_html.h"
 
 WebServer _server(80);
@@ -461,6 +462,31 @@ private:
         String body; serializeJson(resp, body); jsend(200, body);
     }
 
+    // ── GET /api/logs ─────────────────────────────────────────────────────────
+    void handleGetLogs() {
+        Session s; if (!requireAuth(s)) return;
+        int limit = 200;
+        if (_server.hasArg("limit"))
+            limit = (int)min(_server.arg("limit").toInt(), 1000L);
+        String lvl = _server.hasArg("level") ? _server.arg("level") : "";
+        // Normalise level filter
+        lvl.toUpperCase();
+        if (lvl != "INFO" && lvl != "WARN" && lvl != "ERROR") lvl = "";
+        jsend(200, Logger.readEntries(limit, lvl));
+    }
+
+    // ── DELETE /api/logs (super admin only) ───────────────────────────────────
+    void handleClearLogs() {
+        Session s;
+        if (!requireAuth(s)) return;
+        if (s.role != "super_admin") {
+            cors(); _server.send(403, "application/json", "{\"error\":\"forbidden\"}"); return;
+        }
+        Logger.clearLog();
+        Logger.log(LOG_INFO, "WEB", "Device log cleared", "by=" + s.username);
+        jsend(200, "{\"ok\":true}");
+    }
+
     // ── GET /api/photos ───────────────────────────────────────────────────────
     void handleListPhotos() {
         Session s; if (!requireAuth(s)) return;
@@ -644,6 +670,8 @@ public:
         _server.on("/api/employees/pending", HTTP_GET,    [this]{ handlePendingTap(); });
         _server.on("/api/photos",            HTTP_GET,    [this]{ handleListPhotos(); });
         _server.on("/api/photos/delete",     HTTP_POST,   [this]{ handleDeletePhoto(); });
+        _server.on("/api/logs",              HTTP_GET,    [this]{ handleGetLogs(); });
+        _server.on("/api/logs",              HTTP_DELETE, [this]{ handleClearLogs(); });
 
         _server.onNotFound([this]{
             const String& uri = _server.uri();
@@ -672,7 +700,7 @@ public:
         });
 
         _server.begin();
-        Serial.println("[Web] :80  http://" + WiFi.localIP().toString());
+        Logger.log(LOG_INFO, "WEB", "Server started", "http://" + WiFi.localIP().toString());
     }
 
     void loop() { _server.handleClient(); }

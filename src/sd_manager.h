@@ -11,6 +11,7 @@
 #include <WebServer.h>
 #include <vector>
 #include "config.h"
+#include "logger.h"
 
 #define EMPLOYEES_FILE "/data/employees.json"
 #define WHITELIST_FILE "/data/whitelist.json"
@@ -61,19 +62,22 @@ public:
         delay(10);
 
         if (!SD.begin(Config.csPin_SD, spiHSPI, 4000000)) {
-            Serial.println("[SD] Mount failed");
+            Logger.log(LOG_ERROR, "SD", "Mount failed — check card and CS pin",
+                       "cs=" + String(Config.csPin_SD));
             _mounted = false; return false;
         }
-        Serial.printf("[SD] OK  %lluMB  type=%d\n",
-                      SD.cardSize()/(1024*1024), SD.cardType());
+        Logger.logf(LOG_INFO, "SD", "Mounted: %lluMB  type=%d",
+                    SD.cardSize()/(1024*1024), SD.cardType());
         mkdirP("/data"); mkdirP("/www"); mkdirP("/photos");
         if (!SD.exists(EMPLOYEES_FILE)) {
             File f = SD.open(EMPLOYEES_FILE, FILE_WRITE);
             if (f) { f.print("{\"employees\":[],\"updated_at\":0}"); f.close(); }
+            else Logger.log(LOG_ERROR, "SD", "Failed to create employees file");
         }
         if (!SD.exists(WHITELIST_FILE)) {
             File f = SD.open(WHITELIST_FILE, FILE_WRITE);
             if (f) { f.print("{\"uids\":[]}"); f.close(); }
+            else Logger.log(LOG_ERROR, "SD", "Failed to create whitelist file");
         }
         _mounted = true;
         return true;
@@ -100,7 +104,11 @@ public:
                             name.trim(); return name;
                         }
                 }
+            } else {
+                Logger.logf(LOG_ERROR, "SD", "employees.json parse error: %s", err.c_str());
             }
+        } else {
+            Logger.log(LOG_ERROR, "SD", "Cannot open employees.json for UID lookup");
         }
         // Fall back to server-synced flat whitelist
         File wf = SD.open(WHITELIST_FILE, FILE_READ);
@@ -110,6 +118,8 @@ public:
             if (!werr) {
                 for (JsonVariant u : wdoc["uids"].as<JsonArray>())
                     if (String(u | "") == uid) return "Authorized";
+            } else {
+                Logger.logf(LOG_ERROR, "SD", "whitelist.json parse error: %s", werr.c_str());
             }
         }
         return "";
@@ -123,7 +133,10 @@ public:
         JsonDocument doc;
         if (SD.exists(EMPLOYEES_FILE)) {
             File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-            if (f) { deserializeJson(doc, f); f.close(); }
+            if (f) {
+                DeserializationError err = deserializeJson(doc, f); f.close();
+                if (err) Logger.logf(LOG_WARN, "SD", "employees.json parse error on add: %s", err.c_str());
+            }
         }
         if (!doc["employees"].is<JsonArray>()) doc["employees"].to<JsonArray>();
         String localId = makeLocalId();
@@ -136,8 +149,14 @@ public:
         emp["synced"] = false; emp["created_at"] = (long)(millis()/1000);
         emp["cards"].to<JsonArray>();
         File f = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-        if (!f) return "";
+        if (!f) {
+            Logger.log(LOG_ERROR, "SD", "Cannot write employees.json — addEmployee failed",
+                       firstName + " " + lastName);
+            return "";
+        }
         serializeJson(doc, f); f.close();
+        Logger.logf(LOG_INFO, "SD", "Employee added: %s %s  id=%s",
+                    firstName.c_str(), lastName.c_str(), localId.c_str());
         return localId;
     }
 
@@ -146,9 +165,16 @@ public:
         if (!_mounted) return false;
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return false;
-        if (deserializeJson(doc, f)) { f.close(); return false; }
-        f.close();
+        if (!f) {
+            Logger.log(LOG_ERROR, "SD", "Cannot open employees.json — addCard failed",
+                       "uid=" + uid + " localId=" + localId);
+            return false;
+        }
+        DeserializationError err = deserializeJson(doc, f); f.close();
+        if (err) {
+            Logger.logf(LOG_ERROR, "SD", "employees.json parse error on addCard: %s", err.c_str());
+            return false;
+        }
         for (JsonObject emp : doc["employees"].as<JsonArray>()) {
             if (String(emp["local_id"]|"") == localId) {
                 JsonObject card = emp["cards"].add<JsonObject>();
@@ -159,10 +185,18 @@ public:
                 card["issued_at"] = (long)(millis()/1000);
                 emp["synced"] = false;
                 File out = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-                if (!out) return false;
-                serializeJson(doc, out); out.close(); return true;
+                if (!out) {
+                    Logger.log(LOG_ERROR, "SD", "Cannot write employees.json — addCard failed",
+                               "uid=" + uid + " localId=" + localId);
+                    return false;
+                }
+                serializeJson(doc, out); out.close();
+                Logger.logf(LOG_INFO, "SD", "Card assigned: uid=%s to localId=%s",
+                            uid.c_str(), localId.c_str());
+                return true;
             }
         }
+        Logger.log(LOG_WARN, "SD", "addCard: employee not found", "localId=" + localId);
         return false;
     }
 
@@ -170,9 +204,16 @@ public:
         if (!_mounted) return false;
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return false;
-        if (deserializeJson(doc, f)) { f.close(); return false; }
-        f.close();
+        if (!f) {
+            Logger.log(LOG_ERROR, "SD", "Cannot open employees.json — update failed",
+                       "localId=" + localId);
+            return false;
+        }
+        DeserializationError err = deserializeJson(doc, f); f.close();
+        if (err) {
+            Logger.logf(LOG_ERROR, "SD", "employees.json parse error on update: %s", err.c_str());
+            return false;
+        }
         bool found = false;
         for (JsonObject emp : doc["employees"].as<JsonArray>()) {
             if (String(emp["local_id"]|"") == localId) {
@@ -187,11 +228,18 @@ public:
                 found = true; break;
             }
         }
-        if (!found) return false;
+        if (!found) {
+            Logger.log(LOG_WARN, "SD", "updateEmployee: employee not found", "localId=" + localId);
+            return false;
+        }
         File out = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-        if (!out) return false;
+        if (!out) {
+            Logger.log(LOG_ERROR, "SD", "Cannot write employees.json — update failed",
+                       "localId=" + localId);
+            return false;
+        }
         serializeJson(doc, out); out.close();
-        Serial.printf("[SD] Employee updated: %s\n", localId.c_str());
+        Logger.log(LOG_INFO, "SD", "Employee updated", "localId=" + localId);
         return true;
     }
 
@@ -199,9 +247,16 @@ public:
         if (!_mounted) return false;
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return false;
-        if (deserializeJson(doc, f)) { f.close(); return false; }
-        f.close();
+        if (!f) {
+            Logger.log(LOG_ERROR, "SD", "Cannot open employees.json — delete failed",
+                       "localId=" + localId);
+            return false;
+        }
+        DeserializationError err = deserializeJson(doc, f); f.close();
+        if (err) {
+            Logger.logf(LOG_ERROR, "SD", "employees.json parse error on delete: %s", err.c_str());
+            return false;
+        }
         JsonDocument newDoc;
         JsonArray newArr = newDoc["employees"].to<JsonArray>();
         newDoc["updated_at"] = doc["updated_at"];
@@ -210,21 +265,34 @@ public:
             if (String(emp["local_id"]|"") == localId) { found = true; continue; }
             newArr.add(emp);
         }
-        if (!found) return false;
+        if (!found) {
+            Logger.log(LOG_WARN, "SD", "deleteEmployee: employee not found", "localId=" + localId);
+            return false;
+        }
         File out = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-        if (!out) return false;
+        if (!out) {
+            Logger.log(LOG_ERROR, "SD", "Cannot write employees.json — delete failed",
+                       "localId=" + localId);
+            return false;
+        }
         serializeJson(newDoc, out); out.close();
-        Serial.printf("[SD] Employee deleted: %s\n", localId.c_str());
+        Logger.log(LOG_INFO, "SD", "Employee deleted", "localId=" + localId);
         return true;
     }
 
     bool getUnsyncedEmployees(JsonArray& out) {
         if (!_mounted || !SD.exists(EMPLOYEES_FILE)) return false;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return false;
+        if (!f) {
+            Logger.log(LOG_ERROR, "SD", "Cannot open employees.json for sync read");
+            return false;
+        }
         JsonDocument doc;
-        if (deserializeJson(doc, f)) { f.close(); return false; }
-        f.close();
+        DeserializationError err = deserializeJson(doc, f); f.close();
+        if (err) {
+            Logger.logf(LOG_ERROR, "SD", "employees.json parse error on sync: %s", err.c_str());
+            return false;
+        }
         int n = 0;
         for (JsonObject emp : doc["employees"].as<JsonArray>())
             if (!(emp["synced"]|false)) { out.add(emp); n++; }
@@ -371,7 +439,11 @@ public:
                   const String& happened_at, const String& reason) {
         if (!_mounted) return;
         File f = SD.open(EVENTS_LOG, FILE_APPEND);
-        if (!f) return;
+        if (!f) {
+            // Can't use Logger here (different log file) — fall back to Serial
+            Serial.printf("[ERROR][SD] Cannot append to events.log  uid=%s\n", uid.c_str());
+            return;
+        }
         JsonDocument doc;
         // Keep "dir" and "ts" for local panel compatibility; "reason" is new
         doc["uid"]=uid; doc["name"]=name; doc["dir"]=direction;
@@ -497,11 +569,18 @@ public:
             snprintf(path, sizeof(path), "/photos/%s_%lu.jpg", uid.c_str(), millis());
 
         File f = SD.open(path, FILE_WRITE);
-        if (!f) return false;
+        if (!f) {
+            Logger.log(LOG_ERROR, "SD", "Cannot create photo file", String(path));
+            return false;
+        }
         size_t written = f.write(data, len);
         f.close();
-        Serial.printf("[SD] Photo: %s  (%u bytes)\n", path, written);
-        return written == len;
+        if (written != len) {
+            Logger.logf(LOG_ERROR, "SD", "Photo write incomplete: %u/%u bytes", written, len);
+            return false;
+        }
+        Logger.logf(LOG_INFO, "SD", "Photo saved: %s  (%u bytes)", path, written);
+        return true;
     }
 
     String resolveAdminPath(const String& uri) {
@@ -523,7 +602,7 @@ public:
         }
         dir.close();
         for (const String& p : paths) { SD.remove(p); }
-        Serial.printf("[SD] Deleted %u photos\n", (unsigned)paths.size());
+        Logger.logf(LOG_INFO, "SD", "Deleted %u photos (factory reset)", (unsigned)paths.size());
     }
 
     // Delete all photos whose filename UID prefix matches any card of the given employee
