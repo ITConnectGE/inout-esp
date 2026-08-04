@@ -93,6 +93,7 @@ void syncTask(void*) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         ApiClient.syncEvents();
         ApiClient.syncEmployees();
+        ApiClient.uploadPendingPhotos();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();

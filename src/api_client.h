@@ -2,7 +2,9 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <SD.h>
 #include <time.h>
+#include <vector>
 #include "config.h"
 #include "nfc_reader.h"
 #include "sd_manager.h"
@@ -47,6 +49,94 @@ private:
             if (msg) return prefix + String(msg).substring(0, 160);
         }
         return prefix + body.substring(0, 120);
+    }
+
+    // Parse uid and ISO happened_at from a photo base-name (no path, no extension).
+    // Expects format: <uid>_<YYYYMMDD>_<HHMMSS>  e.g. "04A2B3C4_20260804_143022"
+    // Returns false for millis-only names like "04A2B3C4_1234567".
+    bool parsePhotoFilename(const String& base, String& uid, String& happenedAt) {
+        int last = base.lastIndexOf('_');
+        int prev = last > 0 ? base.lastIndexOf('_', last - 1) : -1;
+        if (prev < 0 || prev == last) return false;
+        String timeStr = base.substring(last + 1); // "143022"
+        String dateStr = base.substring(prev + 1, last); // "20260804"
+        if (dateStr.length() != 8 || timeStr.length() != 6) return false;
+        for (char c : dateStr) if (!isdigit(c)) return false;
+        for (char c : timeStr) if (!isdigit(c)) return false;
+        uid = base.substring(0, prev);
+        happenedAt = dateStr.substring(0,4) + "-" + dateStr.substring(4,6) + "-" + dateStr.substring(6,8)
+                   + "T" + timeStr.substring(0,2) + ":" + timeStr.substring(2,4) + ":" + timeStr.substring(4,6) + "Z";
+        return true;
+    }
+
+    // Read JPEG from SD and POST as multipart/form-data to /device/events.
+    // Returns true on HTTP 200/201.
+    bool uploadPhoto(const String& path) {
+        String fullName = path.substring(path.lastIndexOf('/') + 1);
+        String base = fullName.endsWith(".jpg")
+                    ? fullName.substring(0, fullName.length() - 4)
+                    : fullName;
+        String uid, happenedAt;
+        if (!parsePhotoFilename(base, uid, happenedAt)) {
+            Logger.log(LOG_WARN, "PHOTO", "Skipping (millis-only filename)", path);
+            return false;
+        }
+
+        File f = SD.open(path, FILE_READ);
+        if (!f) { Logger.log(LOG_WARN, "PHOTO", "Cannot open for upload", path); return false; }
+        size_t fileSize = f.size();
+        if (fileSize == 0 || fileSize > 200000) {
+            f.close();
+            Logger.logf(LOG_WARN, "PHOTO", "Skipping (size=%u)", (unsigned)fileSize);
+            return false;
+        }
+
+        const char* boundary = "----ESP32Bnd7a3f";
+        String preamble = "--"; preamble += boundary; preamble += "\r\n"
+            "Content-Disposition: form-data; name=\"uid\"\r\n\r\n" + uid + "\r\n"
+            "--"; preamble += boundary; preamble += "\r\n"
+            "Content-Disposition: form-data; name=\"happened_at\"\r\n\r\n" + happenedAt + "\r\n"
+            "--"; preamble += boundary; preamble += "\r\n"
+            "Content-Disposition: form-data; name=\"photo\"; filename=\"photo.jpg\"\r\n"
+            "Content-Type: image/jpeg\r\n\r\n";
+        String postamble = "\r\n--"; postamble += boundary; postamble += "--\r\n";
+
+        size_t totalLen = preamble.length() + fileSize + postamble.length();
+        uint8_t* body = (uint8_t*)malloc(totalLen);
+        if (!body) {
+            f.close();
+            Logger.logf(LOG_WARN, "PHOTO", "OOM (%u bytes needed)", (unsigned)totalLen);
+            return false;
+        }
+        memcpy(body, preamble.c_str(), preamble.length());
+        size_t got = f.read(body + preamble.length(), fileSize);
+        f.close();
+        if (got != fileSize) {
+            free(body);
+            Logger.logf(LOG_WARN, "PHOTO", "Short read %u/%u", (unsigned)got, (unsigned)fileSize);
+            return false;
+        }
+        memcpy(body + preamble.length() + fileSize, postamble.c_str(), postamble.length());
+
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) { free(body); return false; }
+        HTTPClient http;
+        http.begin(Config.serverUrl + "/device/events");
+        http.setTimeout(20000);
+        auth(http);
+        String ct = "multipart/form-data; boundary="; ct += boundary;
+        http.addHeader("Content-Type", ct);
+        int code = http.POST(body, totalLen);
+        String respBody = http.getString();
+        http.end();
+        xSemaphoreGiveRecursive(_mutex);
+        free(body);
+
+        if (code == 200 || code == 201) {
+            Logger.logf(LOG_INFO, "PHOTO", "Uploaded %s (%u bytes)", path.c_str(), (unsigned)fileSize);
+            return true;
+        }
+        Logger.log(LOG_WARN, "PHOTO", "Upload failed: " + path, serverErrMsg(code, respBody));
+        return false;
     }
 
 public:
@@ -232,6 +322,34 @@ public:
             Logger.log(LOG_INFO, "SYNC", "Server requested resync via heartbeat");
             syncWhitelist();
         }
+    }
+
+    void uploadPendingPhotos() {
+        if (!serverReachable() || !SdManager.isMounted()) return;
+        File dir = SD.open("/photos");
+        if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return; }
+
+        std::vector<String> paths;
+        File entry;
+        while ((entry = dir.openNextFile())) {
+            if (!entry.isDirectory()) {
+                String p = String(entry.name());
+                if (p.endsWith(".jpg")) paths.push_back(p);
+            }
+            entry.close();
+        }
+        dir.close();
+
+        if (paths.empty()) return;
+        Logger.logf(LOG_INFO, "PHOTO", "Uploading %d pending photo(s)", (int)paths.size());
+
+        int ok = 0, fail = 0;
+        for (const String& p : paths) {
+            if (uploadPhoto(p)) { SD.remove(p.c_str()); ok++; }
+            else fail++;
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        Logger.logf(LOG_INFO, "PHOTO", "Done: %d uploaded, %d failed", ok, fail);
     }
 
     int proxy(const String& method, const String& path,
