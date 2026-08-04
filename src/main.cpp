@@ -85,7 +85,10 @@ void syncTask(void*) {
     for (int i = 0; i < 30 && !ApiClient.isNtpSynced(); i++) {
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
-    ApiClient.syncWhitelist();
+    if (!ApiClient.syncWhitelist()) {
+        Logger.log(LOG_WARN, "SYNC", "Server unreachable — working locally");
+        Lcd.showNotice(" Server offline", " Working locally", 5000);
+    }
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         ApiClient.syncEvents();

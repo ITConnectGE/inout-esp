@@ -30,6 +30,8 @@ private:
     bool     _showingTap    = false;
     uint32_t _tapShownAt    = 0;
     uint32_t _tapTimeoutMs  = TAP_TIMEOUT_MS;
+    bool     _showingNotice = false;
+    uint32_t _noticeUntil   = 0;
     uint32_t _lastClockMs   = 0;
     String   _fallback      = "";
     uint32_t _fallbackUntil = 0;
@@ -106,6 +108,14 @@ public:
                 _lastClockMs = millis();
                 _showingTap = false;
             }
+        } else if (_showingNotice) {
+            if (millis() >= _noticeUntil) {
+                _showingNotice = false;
+                _lcd->clear();
+                delay(5);
+                renderIdle();
+                _lastClockMs = millis();
+            }
         } else if ((millis() - _lastClockMs) >= 1000) {
             // Update clock every second when idle
             printLine(0, clockLine());
@@ -139,6 +149,18 @@ public:
     }
 
     void setFallback(const String& s) { _fallback = s; }
+
+    // Show a temporary 2-line message, then revert to idle after durationMs.
+    void showNotice(const String& line0, const String& line1, uint32_t durationMs = 4000) {
+        if (!_found) return;
+        _showingTap    = false;
+        _showingNotice = true;
+        _noticeUntil   = millis() + durationMs;
+        _lcd->clear();
+        delay(5);
+        printLine(0, line0);
+        printLine(1, line1);
+    }
 
     // Call once at end of setup() — clears boot messages and shows idle immediately
     void showReady() {
