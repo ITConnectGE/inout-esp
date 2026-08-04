@@ -92,6 +92,8 @@ public:
         HTTPClient http;
         http.begin(Config.serverUrl + "/device/employees/batch");
         http.setTimeout(8000); auth(http);
+        String empUrl = Config.serverUrl + "/device/employees/batch";
+        Serial.printf("[Sync] POST %s\n", empUrl.c_str());
         int code = http.POST(body);
         String respBody = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
@@ -104,7 +106,7 @@ public:
             Serial.printf("[Sync] Employees synced: %d\n", (int)arr.size());
             return (int)arr.size();
         }
-        Serial.printf("[Sync] Employees HTTP %d\n", code); return -1;
+        Serial.printf("[Sync] Employees HTTP %d body: %s\n", code, respBody.c_str()); return -1;
     }
 
     int syncEvents() {
@@ -122,12 +124,15 @@ public:
         String body; serializeJson(doc, body);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return -1;
         HTTPClient http;
-        http.begin(Config.serverUrl + "/device/events/batch");
+        String evUrl = Config.serverUrl + "/device/events/batch";
+        Serial.printf("[Sync] POST %s\n", evUrl.c_str());
+        http.begin(evUrl);
         http.setTimeout(8000); auth(http);
-        int code = http.POST(body); http.end();
+        int code = http.POST(body);
+        String evResp = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
         if (code == 200 || code == 201) { SdManager.markAllSynced(); return n; }
-        Serial.printf("[Sync] Events HTTP %d\n", code); return -1;
+        Serial.printf("[Sync] Events HTTP %d body: %s\n", code, evResp.c_str()); return -1;
     }
 
     bool syncWhitelist() {
