@@ -18,8 +18,8 @@
 #define PIN_VSPI_SCK   18
 #define PIN_VSPI_MISO  19
 #define PIN_VSPI_MOSI  23
-#define DEFAULT_CS_IN   4
-#define DEFAULT_CS_OUT  25
+#define DEFAULT_CS_IN   25
+#define DEFAULT_CS_OUT  4
 
 // ── HSPI — SD card ───────────────────────────────────────────────────────────
 #define PIN_HSPI_SCK   17
