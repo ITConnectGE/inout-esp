@@ -638,6 +638,43 @@ public:
         SD.remove(EVENTS_LOG);
     }
 
+    // Count visual columns in a UTF-8 string (Georgian = 1 col, 3 bytes).
+    static int utf8cols(const String& s) {
+        int cols = 0;
+        for (int i = 0; i < (int)s.length(); ) {
+            unsigned char c = (unsigned char)s[i];
+            if      (c < 0x80) i += 1;
+            else if (c < 0xE0) i += 2;
+            else if (c < 0xF0) i += 3;
+            else               i += 4;
+            cols++;
+        }
+        return cols;
+    }
+
+    // Truncate to at most maxCols visual columns, appending ">" if cut.
+    static String utf8trunc(const String& s, int maxCols) {
+        if (utf8cols(s) <= maxCols) return s;
+        int bytePos = 0, cols = 0;
+        while (bytePos < (int)s.length() && cols < maxCols - 1) {
+            unsigned char c = (unsigned char)s[bytePos];
+            if      (c < 0x80) bytePos += 1;
+            else if (c < 0xE0) bytePos += 2;
+            else if (c < 0xF0) bytePos += 3;
+            else               bytePos += 4;
+            cols++;
+        }
+        return s.substring(0, bytePos) + ">";
+    }
+
+    // Pad string to exactly width visual columns with trailing spaces.
+    static String utf8pad(const String& s, int width) {
+        String r = s;
+        int need = width - utf8cols(s);
+        for (int i = 0; i < need; i++) r += ' ';
+        return r;
+    }
+
     // Print a formatted table of all employees to Serial.
     // Employees are numbered 1..N — the same numbering used by deleteEmployeeByIndex().
     void printEmployees() {
@@ -659,15 +696,14 @@ public:
         for (JsonObject emp : arr) {
             String name = String(emp["first_name"] | "") + " " + String(emp["last_name"] | "");
             name.trim();
-            if ((int)name.length() > 22) { name = name.substring(0, 21); name += ">"; }
-            String lid = emp["local_id"] | "";
-            if ((int)lid.length() > 18) { lid = lid.substring(0, 17); lid += ">"; }
-            String status = emp["status"] | "active";
-            int cards = (int)emp["cards"].as<JsonArray>().size();
+            name = utf8pad(utf8trunc(name, 22), 22);
+            String lid  = utf8pad(utf8trunc(String(emp["local_id"] | ""), 18), 18);
+            String stat = utf8pad(String(emp["status"] | "active").substring(0, 6), 6);
+            int   cards = (int)emp["cards"].as<JsonArray>().size();
             bool synced = emp["synced"] | true;
-            Serial.printf("  | %-2d | %-22s | %-18s | %-6s | %5d | %-6s |\n",
+            Serial.printf("  | %-2d | %s | %s | %s | %5d | %-6s |\n",
                           i++, name.c_str(), lid.c_str(),
-                          status.c_str(), cards, synced ? "yes" : "no");
+                          stat.c_str(), cards, synced ? "yes" : "no");
         }
         Serial.println(sep);
         Serial.println("  Use:  remove <#>  (e.g. remove 1)");

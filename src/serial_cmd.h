@@ -16,6 +16,7 @@
  *   clear all
  *   list employees
  *   remove <name>
+ *   dump logs
  *   factory reset confirm
  */
 
@@ -38,7 +39,7 @@ private:
     void printHelp() {
         Serial.println();
         hr();
-        Serial.println("  InOut v0.4.0 — Serial Commands");
+        Serial.println("  InOut v0.4.1 — Serial Commands");
         hr();
         Serial.println("  help                      This list");
         Serial.println("  status                    Device status");
@@ -50,6 +51,7 @@ private:
         Serial.println("  clear all                 Events + photos + logs");
         Serial.println("  list employees            List all employees on SD");
         Serial.println("  remove <#>                Remove employee by # from list");
+        Serial.println("  dump logs                 Print device log to serial");
         Serial.println("  factory reset confirm     Full wipe + forget WiFi + restart");
         hr();
         Serial.println();
@@ -60,7 +62,7 @@ private:
         hr();
         Serial.println("  Status");
         hr();
-        Serial.printf("  Firmware : v0.4.0\n");
+        Serial.printf("  Firmware : v0.4.1\n");
         Serial.printf("  Uptime   : %lu s\n", millis() / 1000);
         bool online = WiFi.status() == WL_CONNECTED;
         Serial.printf("  WiFi     : %s", online ? "connected" : "offline");
@@ -81,6 +83,22 @@ private:
         } else {
             Serial.printf("  Time     : not set\n");
         }
+        hr();
+        Serial.println();
+    }
+
+    void dumpLogs() {
+        File f = SD.open(DEVICE_LOG, FILE_READ);
+        if (!f) { Serial.println("[CMD] No log file found."); return; }
+        Serial.println();
+        hr();
+        Serial.println("  device.log");
+        hr();
+        while (f.available()) {
+            String line = f.readStringUntil('\n');
+            Serial.println(line);
+        }
+        f.close();
         hr();
         Serial.println();
     }
@@ -151,6 +169,9 @@ private:
             SdManager.deleteAllPhotos();
             Logger.clearLog();
             Serial.println("[CMD] Events, photos, and logs cleared.");
+
+        } else if (lo == "dump logs") {
+            dumpLogs();
 
         } else if (lo == "list employees") {
             Serial.println();
