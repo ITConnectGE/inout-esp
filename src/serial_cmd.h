@@ -49,7 +49,7 @@ private:
         Serial.println("  clear logs                Delete device log from SD");
         Serial.println("  clear all                 Events + photos + logs");
         Serial.println("  list employees            List all employees on SD");
-        Serial.println("  remove <name>             Remove employee by name (partial match)");
+        Serial.println("  remove <firstname> <lastname>  Remove employee (exact name match)");
         Serial.println("  factory reset confirm     Full wipe + forget WiFi + restart");
         hr();
         Serial.println();
@@ -159,8 +159,8 @@ private:
 
         } else if (lo.startsWith("remove ")) {
             String name = cmd.substring(7); name.trim();
-            if (name.isEmpty()) {
-                Serial.println("[CMD] Usage: remove <name>");
+            if (name.isEmpty() || name.indexOf(' ') < 0) {
+                Serial.println("[CMD] Usage: remove <firstname> <lastname>");
             } else {
                 int n = SdManager.deleteEmployeeByName(name);
                 if (n > 0)

@@ -656,7 +656,7 @@ public:
             String full = String(emp["first_name"] | "") + " " + String(emp["last_name"] | "");
             full.trim();
             String fLow = full; fLow.toLowerCase();
-            if (fLow.indexOf(qLow) >= 0) {
+            if (fLow == qLow) {
                 Serial.printf("[CMD] Removing: %s  (local_id=%s)\n",
                               full.c_str(), emp["local_id"] | "?");
                 deleted++;
