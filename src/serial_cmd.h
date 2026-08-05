@@ -49,7 +49,7 @@ private:
         Serial.println("  clear logs                Delete device log from SD");
         Serial.println("  clear all                 Events + photos + logs");
         Serial.println("  list employees            List all employees on SD");
-        Serial.println("  remove <firstname> <lastname>  Remove employee (exact name match)");
+        Serial.println("  remove <#>                Remove employee by # from list");
         Serial.println("  factory reset confirm     Full wipe + forget WiFi + restart");
         hr();
         Serial.println();
@@ -158,15 +158,17 @@ private:
             Serial.println();
 
         } else if (lo.startsWith("remove ")) {
-            String name = cmd.substring(7); name.trim();
-            if (name.isEmpty() || name.indexOf(' ') < 0) {
-                Serial.println("[CMD] Usage: remove <firstname> <lastname>");
+            String arg = cmd.substring(7); arg.trim();
+            bool isNum = arg.length() > 0;
+            for (char c : arg) if (!isdigit(c)) { isNum = false; break; }
+            if (!isNum) {
+                Serial.println("[CMD] Usage: remove <#>  (run 'list employees' to see numbers)");
             } else {
-                int n = SdManager.deleteEmployeeByName(name);
-                if (n > 0)
-                    Serial.printf("[CMD] Removed %d employee(s) matching \"%s\".\n", n, name.c_str());
+                int idx = arg.toInt();
+                if (SdManager.deleteEmployeeByIndex(idx))
+                    Serial.printf("[CMD] Employee #%d removed.\n", idx);
                 else
-                    Serial.printf("[CMD] No employee found matching \"%s\".\n", name.c_str());
+                    Serial.printf("[CMD] No employee at #%d — run 'list employees' first.\n", idx);
             }
 
         } else if (lo == "factory reset confirm") {

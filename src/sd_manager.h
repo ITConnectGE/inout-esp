@@ -638,39 +638,8 @@ public:
         SD.remove(EVENTS_LOG);
     }
 
-    // Remove all employees whose full name contains `query` (case-insensitive).
-    // Returns the number of records deleted.
-    int deleteEmployeeByName(const String& query) {
-        if (!_mounted || query.isEmpty()) return 0;
-        JsonDocument doc;
-        File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return 0;
-        DeserializationError err = deserializeJson(doc, f); f.close();
-        if (err) return 0;
-        String qLow = query; qLow.toLowerCase();
-        JsonDocument newDoc;
-        JsonArray newArr = newDoc["employees"].to<JsonArray>();
-        newDoc["updated_at"] = doc["updated_at"];
-        int deleted = 0;
-        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
-            String full = String(emp["first_name"] | "") + " " + String(emp["last_name"] | "");
-            full.trim();
-            String fLow = full; fLow.toLowerCase();
-            if (fLow == qLow) {
-                Serial.printf("[CMD] Removing: %s  (local_id=%s)\n",
-                              full.c_str(), emp["local_id"] | "?");
-                deleted++;
-            } else {
-                newArr.add(emp);
-            }
-        }
-        if (deleted > 0) {
-            File out = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-            if (out) { serializeJson(newDoc, out); out.close(); }
-        }
-        return deleted;
-    }
-
+    // Print a formatted table of all employees to Serial.
+    // Employees are numbered 1..N — the same numbering used by deleteEmployeeByIndex().
     void printEmployees() {
         if (!_mounted) { Serial.println("  SD not mounted"); return; }
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
@@ -679,17 +648,50 @@ public:
         if (deserializeJson(doc, f)) { f.close(); Serial.println("  Parse error"); return; }
         f.close();
         JsonArray arr = doc["employees"].as<JsonArray>();
-        Serial.printf("  %d employee(s):\n", (int)arr.size());
+        int n = (int)arr.size();
+        if (n == 0) { Serial.println("  No employees on device."); return; }
+        Serial.printf("\n  %d employee(s):\n", n);
+        const char* sep = "  +----+------------------------+--------------------+--------+-------+--------+";
+        Serial.println(sep);
+        Serial.println("  | #  | Name                   | Local ID           | Status | Cards | Synced |");
+        Serial.println(sep);
+        int i = 1;
         for (JsonObject emp : arr) {
             String name = String(emp["first_name"] | "") + " " + String(emp["last_name"] | "");
             name.trim();
-            int nCards = (int)emp["cards"].as<JsonArray>().size();
-            Serial.printf("    %-22s  status=%-8s  cards=%d  synced=%s\n",
-                          name.c_str(),
-                          emp["status"] | "active",
-                          nCards,
-                          (emp["synced"] | true) ? "yes" : "no");
+            if ((int)name.length() > 22) { name = name.substring(0, 21); name += ">"; }
+            String lid = emp["local_id"] | "";
+            if ((int)lid.length() > 18) { lid = lid.substring(0, 17); lid += ">"; }
+            String status = emp["status"] | "active";
+            int cards = (int)emp["cards"].as<JsonArray>().size();
+            bool synced = emp["synced"] | true;
+            Serial.printf("  | %-2d | %-22s | %-18s | %-6s | %5d | %-6s |\n",
+                          i++, name.c_str(), lid.c_str(),
+                          status.c_str(), cards, synced ? "yes" : "no");
         }
+        Serial.println(sep);
+        Serial.println("  Use:  remove <#>  (e.g. remove 1)");
+        Serial.println();
+    }
+
+    // Delete the employee at 1-based position `index` (as shown by printEmployees).
+    // Returns true if found and deleted.
+    bool deleteEmployeeByIndex(int index) {
+        if (!_mounted || index < 1) return false;
+        JsonDocument doc;
+        File f = SD.open(EMPLOYEES_FILE, FILE_READ);
+        if (!f) return false;
+        DeserializationError err = deserializeJson(doc, f); f.close();
+        if (err) return false;
+        JsonArray arr = doc["employees"].as<JsonArray>();
+        if (index > (int)arr.size()) return false;
+        String localId = arr[index - 1]["local_id"] | "";
+        if (localId.isEmpty()) return false;
+        String name = String(arr[index - 1]["first_name"] | "")
+                    + " " + String(arr[index - 1]["last_name"] | "");
+        name.trim();
+        Serial.printf("[CMD] Removing #%d: %s  (id=%s)\n", index, name.c_str(), localId.c_str());
+        return deleteEmployee(localId);
     }
 
     // Delete every file in /photos — used by factory reset
