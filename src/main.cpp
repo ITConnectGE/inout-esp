@@ -33,6 +33,7 @@
 #include "lcd_display.h"
 #include "web_server.h"
 #include "cam_uart.h"
+#include "serial_cmd.h"
 
 SPIClass spiVSPI(VSPI);
 SPIClass spiHSPI(HSPI);
@@ -208,6 +209,7 @@ void setup() {
 
 // ── Loop ─────────────────────────────────────────────────────────────────────
 void loop() {
+    SerialCmd.loop();
     WebServerManager.loop();
     Relay.loop();
     Lcd.loop();
