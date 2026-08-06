@@ -38,6 +38,7 @@ struct Session {
     String username;
     String role;
     uint32_t expiresAt;
+    bool mustChange = false;
 };
 
 struct AuthManagerClass {
@@ -59,6 +60,15 @@ private:
             hex += String(hash[i], HEX);
         }
         return hex;
+    }
+
+    // Cryptographically random alphanumeric password using ESP32 hardware RNG
+    String generatePassword() {
+        const char charset[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+        String pass = "";
+        for (int i = 0; i < 12; i++)
+            pass += charset[esp_random() % (sizeof(charset) - 1)];
+        return pass;
     }
 
     // Simple random token
@@ -101,21 +111,28 @@ private:
 
 public:
     void begin() {
-        // Create default super admin if file doesn't exist
         if (!SD.exists(ADMINS_FILE)) {
+            String initPass = generatePassword();
             JsonDocument doc;
             JsonArray arr = doc["admins"].to<JsonArray>();
             JsonObject a = arr.add<JsonObject>();
             a["id"]                   = "1";
             a["username"]             = "admin";
-            a["password_hash"]        = sha256("12345678");
+            a["password_hash"]        = sha256(initPass);
             a["role"]                 = "super_admin";
             a["must_change_password"] = true;
             a["created_at"]           = (long)(millis()/1000);
             File f = SD.open(ADMINS_FILE, FILE_WRITE);
             if (f) { serializeJson(doc, f); f.close(); }
             else Logger.log(LOG_ERROR, "AUTH", "Cannot write default admins.json");
-            Logger.log(LOG_WARN, "AUTH", "Default super admin created (admin/12345678) — change password");
+            // Print once to serial — operator must read this to log in
+            Serial.println("\n╔══════════════════════════════════════════╗");
+            Serial.println(  "║        DEFAULT ADMIN CREDENTIALS         ║");
+            Serial.println(  "║  username : admin                        ║");
+            Serial.printf(   "║  password : %-28s ║\n", initPass.c_str());
+            Serial.println(  "║  Change password immediately after login ║");
+            Serial.println(  "╚══════════════════════════════════════════╝\n");
+            Logger.log(LOG_WARN, "AUTH", "Default super admin created — check serial for password");
         } else {
             Logger.log(LOG_INFO, "AUTH", "Admins loaded from SD");
         }
@@ -138,7 +155,12 @@ public:
                 role       = String(a["role"] | "admin");
                 mustChange = a["must_change_password"] | false;
                 String token = makeToken();
-                _sessions[token] = { username, role, millis() + SESSION_TTL_MS };
+                Session sess;
+                sess.username   = username;
+                sess.role       = role;
+                sess.expiresAt  = millis() + SESSION_TTL_MS;
+                sess.mustChange = mustChange;
+                _sessions[token] = sess;
                 Logger.logf(LOG_INFO, "AUTH", "Login OK: %s (%s)",
                             username.c_str(), role.c_str());
                 return token;
@@ -161,6 +183,11 @@ public:
 
     void logout(const String& token) {
         _sessions.erase(token);
+    }
+
+    void clearMustChange(const String& token) {
+        auto it = _sessions.find(token);
+        if (it != _sessions.end()) it->second.mustChange = false;
     }
 
     // ── Change password ───────────────────────────────────────────────────────

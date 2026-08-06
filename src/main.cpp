@@ -158,8 +158,8 @@ void setup() {
         digitalWrite(DEFAULT_LED2, HIGH);
     });
 
-    WiFiManagerParameter pServer("server", "Server URL",   Config.serverUrl.c_str(),   128);
-    WiFiManagerParameter pToken ("token",  "Device Token", Config.deviceToken.c_str(), 128);
+    WiFiManagerParameter pServer("server", "Server URL",   Config.serverUrl.c_str(), 128);
+    WiFiManagerParameter pToken ("token",  "Device Token", "",                        128);
     wm.addParameter(&pServer);
     wm.addParameter(&pToken);
 
@@ -173,8 +173,9 @@ void setup() {
     Lcd.setFallback(WiFi.localIP().toString());
 
     if (strlen(pServer.getValue()) > 0) {
-        Config.serverUrl   = pServer.getValue();
-        Config.deviceToken = pToken.getValue();
+        Config.serverUrl = pServer.getValue();
+        if (strlen(pToken.getValue()) > 0)
+            Config.deviceToken = pToken.getValue();
         Config.save();
     }
 

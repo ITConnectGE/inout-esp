@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <SD.h>
 #include <time.h>
@@ -22,6 +23,28 @@ struct ApiClientClass {
 private:
     bool _ntpSynced = false;
     SemaphoreHandle_t _mutex = nullptr;
+    String _caCert;
+
+    void loadCaCert() {
+        if (!SdManager.isMounted() || !SD.exists("/data/ca.pem")) {
+            Logger.log(LOG_WARN, "API", "No /data/ca.pem on SD — TLS cert validation disabled. "
+                                        "Place server CA cert at /data/ca.pem to enable.");
+            return;
+        }
+        File f = SD.open("/data/ca.pem", FILE_READ);
+        if (!f) return;
+        _caCert = "";
+        while (f.available()) _caCert += (char)f.read();
+        f.close();
+        Logger.logf(LOG_INFO, "API", "CA cert loaded from /data/ca.pem (%d bytes)", _caCert.length());
+    }
+
+    void setupSecureClient(WiFiClientSecure& c) {
+        if (_caCert.length() > 0)
+            c.setCACert(_caCert.c_str());
+        else
+            c.setInsecure();
+    }
 
     static bool setTimeFromEpoch(time_t epoch) {
         if (epoch < 1700000000L) return false; // sanity: after 2023-11
@@ -117,6 +140,7 @@ public:
         setenv("TZ", Config.getPosixTz().c_str(), 1);
         tzset();
         Logger.log(LOG_INFO, "API", "NTP requested: pool.ntp.org time.nist.gov");
+        loadCaCert();
     }
 
     bool isNtpSynced() {
@@ -178,8 +202,9 @@ public:
             Logger.log(LOG_ERROR, "SYNC", "Employees sync: mutex timeout");
             return -1;
         }
+        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(Config.serverUrl + "/device/employees/batch");
+        http.begin(wcs, Config.serverUrl + "/device/employees/batch");
         http.setTimeout(8000); auth(http);
         int code = http.POST(body);
         String respBody = http.getString(); http.end();
@@ -291,8 +316,9 @@ public:
             return -1;
         }
         size_t bodyLen = bodyFile.size();
+        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(Config.serverUrl + "/device/events/batch");
+        http.begin(wcs, Config.serverUrl + "/device/events/batch");
         http.setTimeout(30000);
         http.addHeader("Authorization", "Bearer " + Config.deviceToken);
         http.addHeader("Accept",        "application/json");
@@ -328,8 +354,9 @@ public:
             Logger.log(LOG_ERROR, "SYNC", "Whitelist sync: mutex timeout");
             return false;
         }
+        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(Config.serverUrl + "/device/sync");
+        http.begin(wcs, Config.serverUrl + "/device/sync");
         http.setTimeout(8000); auth(http);
         const char* dateHdr[] = {"Date"};
         http.collectHeaders(dateHdr, 1);
@@ -365,8 +392,9 @@ public:
             Logger.log(LOG_WARN, "API", "Heartbeat: mutex timeout");
             return;
         }
+        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(Config.serverUrl + "/device/heartbeat");
+        http.begin(wcs, Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
         doc["firmware"]        = "0.4.1";
@@ -405,8 +433,9 @@ public:
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             out = "{\"error\":\"busy\"}"; return 503;
         }
+        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(Config.serverUrl + path);
+        http.begin(wcs, Config.serverUrl + path);
         http.setTimeout(10000); auth(http);
         int code;
         if      (method=="GET")    code = http.GET();

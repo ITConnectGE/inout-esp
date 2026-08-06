@@ -103,6 +103,16 @@ private:
                 "{\"error\":\"unauthorized\",\"code\":401}");
             return false;
         }
+        // Block all endpoints except password-change, /me, and logout when flag is set
+        const String& uri = _server.uri();
+        if (session.mustChange &&
+            uri != "/api/auth/change-password" &&
+            uri != "/api/auth/me" &&
+            uri != "/api/auth/logout") {
+            cors(); _server.send(403, "application/json",
+                "{\"error\":\"must_change_password\",\"code\":403}");
+            return false;
+        }
         return true;
     }
 
@@ -179,10 +189,12 @@ private:
         String newPass = doc["new_password"] | "";
         if (newPass.length() < 8) { jsend(400,"{\"error\":\"Password min 8 chars\"}"); return; }
 
-        if (AuthManager.changePassword(s.username, oldPass, newPass))
+        if (AuthManager.changePassword(s.username, oldPass, newPass)) {
+            AuthManager.clearMustChange(getToken());
             jsend(200, "{\"ok\":true}");
-        else
+        } else {
             jsend(400, "{\"error\":\"Current password incorrect\"}");
+        }
     }
 
     // ── GET /api/admins ───────────────────────────────────────────────────────
@@ -750,6 +762,10 @@ public:
             }
             // Serve any SD www file (JS, CSS, icons etc)
             if (SdManager.isMounted()) {
+                if (uri.indexOf("..") >= 0) {
+                    _server.send(400, "text/plain", "Bad Request");
+                    return;
+                }
                 String sdPath = "/www" + uri;
                 if (SdManager.serveFile(_server, sdPath)) return;
             }
