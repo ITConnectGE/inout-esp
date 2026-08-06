@@ -8,24 +8,40 @@
  * Commands:
  *   help
  *   status
+ *   config
  *   restart
+ *   open                                 Trigger relay (hardware test)
+ *   nfc status                           Live re-check both PN532 readers
+ *   sync                                 Force whitelist+events+employees sync now
+ *   set server <url>
+ *   set token <token>
+ *   set tz <IANA name>
  *   forget wifi
  *   clear events
  *   clear photos
  *   clear logs
  *   clear all
  *   list employees
- *   remove <name>
+ *   list cards
+ *   list admins
+ *   remove <#>
+ *   add admin <username> <password> [role]
+ *   reset password <username> <new_password>
  *   dump logs
  *   factory reset confirm
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <vector>
 #include "config.h"
 #include "sd_manager.h"
 #include "logger.h"
 #include "web_server.h"
+#include "api_client.h"
+#include "nfc_reader.h"
+#include "auth_manager.h"
+#include "relay.h"
 
 struct SerialCmdClass {
 private:
@@ -38,18 +54,29 @@ private:
     void printHelp() {
         Serial.println();
         hr();
-        Serial.println("  InOut v0.4.1 — Serial Commands");
+        Serial.println("  InOut v0.4.2 — Serial Commands");
         hr();
         Serial.println("  help                      This list");
         Serial.println("  status                    Device status");
+        Serial.println("  config                    Dump current configuration");
         Serial.println("  restart                   Restart ESP32");
+        Serial.println("  open                      Trigger relay (hardware test)");
+        Serial.println("  nfc status                Live re-check both PN532 readers");
+        Serial.println("  sync                      Force whitelist+events+employees sync now");
+        Serial.println("  set server <url>          Set backend server URL");
+        Serial.println("  set token <token>         Set device auth token");
+        Serial.println("  set tz <IANA name>        Set timezone, e.g. Asia/Tbilisi");
         Serial.println("  forget wifi               Erase WiFi credentials + restart");
         Serial.println("  clear events              Delete events log from SD");
         Serial.println("  clear photos              Delete all photos from SD");
         Serial.println("  clear logs                Delete device log from SD");
         Serial.println("  clear all                 Events + photos + logs");
         Serial.println("  list employees            List all employees on SD");
+        Serial.println("  list cards                List all registered cards");
+        Serial.println("  list admins               List admin accounts");
         Serial.println("  remove <#>                Remove employee by # from list");
+        Serial.println("  add admin <user> <pass> [role]   Create admin (role: admin/super_admin)");
+        Serial.println("  reset password <user> <newpass>  Force-reset an admin's password");
         Serial.println("  dump logs                 Print device log to serial");
         Serial.println("  factory reset confirm     Full wipe + forget WiFi + restart");
         hr();
@@ -61,7 +88,7 @@ private:
         hr();
         Serial.println("  Status");
         hr();
-        Serial.printf("  Firmware : v0.4.1\n");
+        Serial.printf("  Firmware : v0.4.2\n");
         Serial.printf("  Uptime   : %lu s\n", millis() / 1000);
         bool online = WiFi.status() == WL_CONNECTED;
         Serial.printf("  WiFi     : %s", online ? "connected" : "offline");
@@ -114,6 +141,81 @@ private:
         WebServerManager.performReset(true);
     }
 
+    void doOpen() {
+        Relay.open(Config.relayMs);
+        Serial.printf("[CMD] Relay opened for %dms\n", Config.relayMs);
+    }
+
+    void doNfcStatus() {
+        Serial.println();
+        hr();
+        Serial.println("  NFC Readers (live)");
+        hr();
+        uint32_t vIn  = NfcReader.ping(READER_IN);
+        uint32_t vOut = NfcReader.ping(READER_OUT);
+        Serial.printf("  IN   CS=GPIO%-3d  %s", Config.csPin_IN, vIn ? "OK " : "FAIL");
+        if (vIn) Serial.printf("  PN5%02x v%d.%d", (vIn>>24)&0xFF, (vIn>>16)&0xFF, (vIn>>8)&0xFF);
+        Serial.println();
+        Serial.printf("  OUT  CS=GPIO%-3d  %s", Config.csPin_OUT, vOut ? "OK " : "FAIL");
+        if (vOut) Serial.printf("  PN5%02x v%d.%d", (vOut>>24)&0xFF, (vOut>>16)&0xFF, (vOut>>8)&0xFF);
+        Serial.println();
+        hr();
+        Serial.println();
+    }
+
+    void doSync() {
+        Serial.println("[CMD] Syncing with server...");
+        bool wl = ApiClient.syncWhitelist();
+        int  ev = ApiClient.syncEvents();
+        int  em = ApiClient.syncEmployees();
+        ApiClient.sendHeartbeat();
+        Serial.printf("[CMD] Whitelist: %s  Events synced: %d  Employees synced: %d\n",
+                      wl ? "ok" : "failed", ev, em);
+    }
+
+    // Splits on single spaces, skipping empty tokens (repeated spaces).
+    static void splitTokens(const String& s, std::vector<String>& out) {
+        int start = 0;
+        while (start < (int)s.length()) {
+            int sp = s.indexOf(' ', start);
+            if (sp < 0) sp = s.length();
+            if (sp > start) out.push_back(s.substring(start, sp));
+            start = sp + 1;
+        }
+    }
+
+    void doAddAdmin(const String& args) {
+        std::vector<String> tok; splitTokens(args, tok);
+        if (tok.size() < 2) {
+            Serial.println("[CMD] Usage: add admin <username> <password> [role]");
+            return;
+        }
+        String username = tok[0], password = tok[1];
+        String role = tok.size() > 2 ? tok[2] : "admin";
+        if (role != "admin" && role != "super_admin") role = "admin";
+        if (username.length() < 3) { Serial.println("[CMD] Username min 3 chars"); return; }
+        if (password.length() < 8) { Serial.println("[CMD] Password min 8 chars"); return; }
+        if (AuthManager.addAdmin(username, password, role))
+            Serial.printf("[CMD] Admin '%s' created (role=%s). Must change password on first login.\n",
+                          username.c_str(), role.c_str());
+        else
+            Serial.println("[CMD] Failed — username already exists.");
+    }
+
+    void doResetPassword(const String& args) {
+        std::vector<String> tok; splitTokens(args, tok);
+        if (tok.size() != 2) {
+            Serial.println("[CMD] Usage: reset password <username> <new_password>");
+            return;
+        }
+        String username = tok[0], newPass = tok[1];
+        if (newPass.length() < 8) { Serial.println("[CMD] Password min 8 chars"); return; }
+        if (AuthManager.setPassword(username, newPass))
+            Serial.printf("[CMD] Password reset for '%s'. Must change on next login.\n", username.c_str());
+        else
+            Serial.println("[CMD] Admin not found.");
+    }
+
     // ── Dispatcher ────────────────────────────────────────────────────────────
 
     void dispatch(const String& raw) {
@@ -126,10 +228,40 @@ private:
         } else if (lo == "status") {
             printStatus();
 
+        } else if (lo == "config") {
+            Config.printConfig();
+
         } else if (lo == "restart") {
             Serial.println("[CMD] Restarting...");
             delay(100);
             ESP.restart();
+
+        } else if (lo == "open") {
+            doOpen();
+
+        } else if (lo == "nfc status") {
+            doNfcStatus();
+
+        } else if (lo == "sync") {
+            doSync();
+
+        } else if (lo.startsWith("set server ")) {
+            Config.serverUrl = cmd.substring(11);
+            Config.save();
+            Serial.printf("[CMD] Server set to: %s\n", Config.serverUrl.c_str());
+
+        } else if (lo.startsWith("set token ")) {
+            Config.deviceToken = cmd.substring(10);
+            Config.save();
+            Serial.printf("[CMD] Token set (%d chars).\n", Config.deviceToken.length());
+
+        } else if (lo.startsWith("set tz ")) {
+            Config.timezone = cmd.substring(7);
+            Config.save();
+            setenv("TZ", Config.getPosixTz().c_str(), 1);
+            tzset();
+            Serial.printf("[CMD] Timezone set to: %s (%s)\n",
+                          Config.timezone.c_str(), Config.getPosixTz().c_str());
 
         } else if (lo == "forget wifi") {
             doForgetWifi();
@@ -159,6 +291,18 @@ private:
             Serial.println();
             SdManager.printEmployees();
             Serial.println();
+
+        } else if (lo == "list cards") {
+            SdManager.printCards();
+
+        } else if (lo == "list admins") {
+            AuthManager.printAdmins();
+
+        } else if (lo.startsWith("add admin ")) {
+            doAddAdmin(cmd.substring(10));
+
+        } else if (lo.startsWith("reset password ")) {
+            doResetPassword(cmd.substring(15));
 
         } else if (lo.startsWith("remove ")) {
             String arg = cmd.substring(7); arg.trim();
@@ -194,7 +338,7 @@ public:
                 _buf.trim();
                 if (_buf.length()) dispatch(_buf);
                 _buf = "";
-            } else if (_buf.length() < 128) {
+            } else if (_buf.length() < 256) {
                 _buf += ch;
             }
         }

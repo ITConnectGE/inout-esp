@@ -103,6 +103,23 @@ struct ConfigData {
         return "UTC0";  // fallback
     }
 
+    // ── Serial console: dump current config (token value not shown) ────────────
+    void printConfig() {
+        Serial.println();
+        Serial.println("  Server     : " + (serverUrl.length() ? serverUrl : String("(not set)")));
+        Serial.println("  Token      : " + (deviceToken.length()
+                        ? ("set (" + String(deviceToken.length()) + " chars)") : String("not set")));
+        Serial.println("  Identifier : " + identifier);
+        Serial.println("  Timezone   : " + timezone + "  (" + getPosixTz() + ")");
+        Serial.println("  Direction  : " + directionMode);
+        Serial.printf ("  Relay      : GPIO%d  %dms\n", relayPin, relayMs);
+        Serial.printf ("  Buzzer     : GPIO%d\n", buzzPin);
+        Serial.printf ("  CS IN/OUT  : GPIO%d / GPIO%d\n", csPin_IN, csPin_OUT);
+        Serial.printf ("  CS SD      : GPIO%d\n", csPin_SD);
+        Serial.printf ("  Config ver : %d\n", configVersion);
+        Serial.println();
+    }
+
     void applyFromJson(const JsonObject& obj) {
         if (!obj["server_url"].isNull())     serverUrl     = obj["server_url"].as<String>();
         if (!obj["device_token"].isNull())   deviceToken   = obj["device_token"].as<String>();

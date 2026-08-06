@@ -285,4 +285,30 @@ public:
         if (!validate(token, s)) return false;
         return s.role == "super_admin";
     }
+
+    // ── Serial console: pretty-print admin accounts (no password hashes) ───────
+    void printAdmins() {
+        JsonDocument doc;
+        if (!loadDoc(doc)) { Serial.println("  No admins.json found"); return; }
+        JsonArray arr = doc["admins"].as<JsonArray>();
+        int n = (int)arr.size();
+        if (n == 0) { Serial.println("  No admin accounts."); return; }
+        Serial.printf("\n  %d admin account(s):\n", n);
+        const char* sep = "  +----+-----------------------+---------------+-----------------+";
+        Serial.println(sep);
+        Serial.println("  | #  | Username              | Role          | Must change pw  |");
+        Serial.println(sep);
+        int i = 1;
+        for (JsonObject a : arr) {
+            String user = String(a["username"] | ""); user = user.substring(0, 21);
+            while (user.length() < 21) user += ' ';
+            String role = String(a["role"] | ""); role = role.substring(0, 13);
+            while (role.length() < 13) role += ' ';
+            bool mustChange = a["must_change_password"] | false;
+            Serial.printf("  | %-2d | %s | %s | %-15s |\n",
+                          i++, user.c_str(), role.c_str(), mustChange ? "yes" : "no");
+        }
+        Serial.println(sep);
+        Serial.println();
+    }
 } AuthManager;
