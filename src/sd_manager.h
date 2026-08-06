@@ -738,12 +738,13 @@ public:
         std::vector<String> paths;
         File entry;
         while ((entry = dir.openNextFile())) {
-            if (!entry.isDirectory()) paths.push_back(String(entry.name()));
+            if (!entry.isDirectory()) paths.push_back(String(entry.path()));
             entry.close();
         }
         dir.close();
-        for (const String& p : paths) { SD.remove(p); }
-        Logger.logf(LOG_INFO, "SD", "Deleted %u photos (factory reset)", (unsigned)paths.size());
+        int deleted = 0;
+        for (const String& p : paths) { if (SD.remove(p)) deleted++; }
+        Logger.logf(LOG_INFO, "SD", "Deleted %d/%u photos (factory reset)", deleted, (unsigned)paths.size());
     }
 
     // Delete all photos whose filename UID prefix matches any card of the given employee
@@ -777,7 +778,7 @@ public:
             File entry;
             while ((entry = dir.openNextFile())) {
                 if (entry.isDirectory()) { entry.close(); continue; }
-                String fpath = String(entry.name());
+                String fpath = String(entry.path());
                 entry.close();
                 int slash = fpath.lastIndexOf('/');
                 String fname = slash >= 0 ? fpath.substring(slash + 1) : fpath;
@@ -791,8 +792,8 @@ public:
             dir.close();
         }
         for (const String& p : toDelete) {
-            SD.remove(p);
-            Serial.printf("[SD] Deleted employee photo: %s\n", p.c_str());
+            if (SD.remove(p)) Serial.printf("[SD] Deleted employee photo: %s\n", p.c_str());
+            else              Serial.printf("[SD] Failed to delete employee photo: %s\n", p.c_str());
         }
     }
 } SdManager;
