@@ -12,7 +12,12 @@
 enum ReaderIndex   { READER_IN = 0, READER_OUT = 1 };
 enum CardDirection { DIR_IN    = 0, DIR_OUT    = 1 };
 
-#define DEBOUNCE_MS 3000
+#define DEBOUNCE_MS 5000
+
+// Cross-reader cooldown after ANY accepted tap — independent of per-card
+// debounce above. Gives the camera a clear window to finish a capture
+// before the next tap (on either reader) is even accepted.
+#define GLOBAL_DEBOUNCE_MS 5000
 
 extern SPIClass spiVSPI;
 
@@ -22,6 +27,7 @@ private:
     String   _lastUid[2]  = { "", "" };
     uint32_t _lastMs[2]   = { 0, 0 };
     bool     _ok[2]       = { false, false };
+    uint32_t _globalLastMs = 0;
 
     void deassertAll() {
         digitalWrite(Config.csPin_IN,  HIGH);
@@ -83,16 +89,29 @@ public:
 
     bool isOk(ReaderIndex idx) { return _ok[idx]; }
 
+    // Live re-check — queries the reader now and refreshes isOk().
+    // Returns the raw PN532 firmware version word (0 = not found).
+    uint32_t ping(ReaderIndex idx) {
+        if (!_r[idx]) return 0;
+        deassertAll();
+        uint32_t ver = _r[idx]->getFirmwareVersion();
+        deassertAll();
+        _ok[idx] = (ver != 0);
+        return ver;
+    }
+
     bool poll(ReaderIndex idx, String& uid) {
         if (!_ok[idx]) return false;
         uint8_t buf[7]; uint8_t len = 0;
         bool found = _r[idx]->readPassiveTargetID(
             PN532_MIFARE_ISO14443A, buf, &len, 50);
         if (!found || len == 0) return false;
-        String hex = toHex(buf, len);
         uint32_t now = millis();
+        if (now - _globalLastMs < GLOBAL_DEBOUNCE_MS) return false;
+        String hex = toHex(buf, len);
         if (hex == _lastUid[idx] && (now - _lastMs[idx]) < DEBOUNCE_MS) return false;
         _lastUid[idx] = hex; _lastMs[idx] = now; uid = hex;
+        _globalLastMs = now;
         return true;
     }
 } NfcReader;

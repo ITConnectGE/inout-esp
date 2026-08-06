@@ -22,9 +22,22 @@
 
 extern SPIClass spiHSPI;
 
+// RAII guard for SdManagerClass's recursive mutex — used internally by every
+// SD-touching method so early returns can't accidentally skip the unlock.
+// Recursive: a guarded method calling another guarded method on the same
+// object, from the same task, just re-enters (no deadlock).
+struct SdIoLock {
+    SemaphoreHandle_t h; bool held = false;
+    SdIoLock(SemaphoreHandle_t handle, uint32_t timeoutMs = 3000) : h(handle) {
+        held = h && xSemaphoreTakeRecursive(h, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+    }
+    ~SdIoLock() { if (held) xSemaphoreGiveRecursive(h); }
+};
+
 struct SdManagerClass {
 private:
     bool _mounted = false;
+    SemaphoreHandle_t _ioMutex = nullptr;
 
     String mime(const String& p) {
         if (p.endsWith(".html")||p.endsWith(".htm")) return "text/html";
@@ -47,7 +60,18 @@ private:
     }
 
 public:
+    // Held across a whole span of calls (e.g. CamUart's multi-chunk photo
+    // write) so no other task's SD access can interleave with it. Internal
+    // methods take/give the same recursive mutex too, so calling a guarded
+    // method while already holding this lock is safe (re-entrant).
+    bool lock(uint32_t timeoutMs = 3000) {
+        return _ioMutex && xSemaphoreTakeRecursive(_ioMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+    }
+    void unlock() { if (_ioMutex) xSemaphoreGiveRecursive(_ioMutex); }
+
     bool begin() {
+        if (!_ioMutex) _ioMutex = xSemaphoreCreateRecursiveMutex();
+
         // Dedicated HSPI bus — start it here
         spiHSPI.begin(PIN_HSPI_SCK, PIN_HSPI_MISO, PIN_HSPI_MOSI);
         delay(100);
@@ -89,6 +113,7 @@ public:
 
     String lookupUid(const String& uid) {
         if (!_mounted) return "";
+        SdIoLock _lk(_ioMutex);
         // Check locally-added employees first (have full names)
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (f) {
@@ -130,6 +155,7 @@ public:
                        const String& phone,     const String& email,
                        const String& externalId) {
         if (!_mounted) return "";
+        SdIoLock _lk(_ioMutex);
         JsonDocument doc;
         if (SD.exists(EMPLOYEES_FILE)) {
             File f = SD.open(EMPLOYEES_FILE, FILE_READ);
@@ -163,6 +189,7 @@ public:
     bool addCard(const String& localId, const String& uid,
                  const String& label,   const String& type) {
         if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) {
@@ -202,6 +229,7 @@ public:
 
     bool updateEmployee(const String& localId, const JsonObject& updates) {
         if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) {
@@ -245,6 +273,7 @@ public:
 
     bool deleteEmployee(const String& localId) {
         if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) {
@@ -281,7 +310,9 @@ public:
     }
 
     bool getUnsyncedEmployees(JsonArray& out) {
-        if (!_mounted || !SD.exists(EMPLOYEES_FILE)) return false;
+        if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EMPLOYEES_FILE)) return false;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) {
             Logger.log(LOG_ERROR, "SD", "Cannot open employees.json for sync read");
@@ -300,7 +331,9 @@ public:
     }
 
     void markEmployeesSynced(const JsonArray& serverIds) {
-        if (!_mounted || !SD.exists(EMPLOYEES_FILE)) return;
+        if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EMPLOYEES_FILE)) return;
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) return;
@@ -317,6 +350,7 @@ public:
 
     bool updateWhitelist(const String& json) {
         if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
         JsonDocument doc;
         if (deserializeJson(doc, json)) return false;
         if (!doc["whitelist"].is<JsonArray>()) return false;
@@ -417,7 +451,9 @@ public:
     }
 
     long whitelistUpdatedAt() {
-        if (!_mounted || !SD.exists(EMPLOYEES_FILE)) return 0;
+        if (!_mounted) return 0;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EMPLOYEES_FILE)) return 0;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) return 0;
         JsonDocument doc;
@@ -426,7 +462,9 @@ public:
     }
 
     int employeeCount() {
-        if (!_mounted || !SD.exists(EMPLOYEES_FILE)) return 0;
+        if (!_mounted) return 0;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EMPLOYEES_FILE)) return 0;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) return 0;
         JsonDocument doc;
@@ -438,6 +476,7 @@ public:
                   const String& direction, const String& decision,
                   const String& happened_at, const String& reason) {
         if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
         File f = SD.open(EVENTS_LOG, FILE_APPEND);
         if (!f) {
             // Can't use Logger here (different log file) — fall back to Serial
@@ -453,7 +492,9 @@ public:
     }
 
     int unsyncedCount() {
-        if (!_mounted || !SD.exists(EVENTS_LOG)) return 0;
+        if (!_mounted) return 0;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EVENTS_LOG)) return 0;
         File f = SD.open(EVENTS_LOG, FILE_READ);
         if (!f) return 0;
         int n = 0;
@@ -465,7 +506,9 @@ public:
     }
 
     bool getUnsyncedEvents(JsonArray& out, int limit = 50) {
-        if (!_mounted || !SD.exists(EVENTS_LOG)) return false;
+        if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EVENTS_LOG)) return false;
         File f = SD.open(EVENTS_LOG, FILE_READ);
         if (!f) return false;
         int n = 0;
@@ -503,6 +546,7 @@ public:
     // Photo filename format: /photos/<uid>_<YYYYMMDD>_<HHMMSS>.jpg
     String getPhotoForEvent(const String& uid, const String& ts) {
         if (!_mounted || uid.isEmpty() || ts.length() < 19) return "";
+        SdIoLock _lk(_ioMutex);
         String dateStr = ts.substring(0,4) + ts.substring(5,7) + ts.substring(8,10);
         String timeStr = ts.substring(11,13) + ts.substring(14,16) + ts.substring(17,19);
         String path = "/photos/" + uid + "_" + dateStr + "_" + timeStr + ".jpg";
@@ -511,7 +555,9 @@ public:
 
     // Mark the first n unsynced events in events.log as synced (in file order).
     void markNEventsSynced(int n) {
-        if (!_mounted || !SD.exists(EVENTS_LOG) || n <= 0) return;
+        if (!_mounted || n <= 0) return;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EVENTS_LOG)) return;
         String tmp = "/data/ev.tmp";
         File src = SD.open(EVENTS_LOG, FILE_READ);
         File dst = SD.open(tmp, FILE_WRITE);
@@ -531,7 +577,9 @@ public:
     }
 
     void markAllSynced() {
-        if (!_mounted || !SD.exists(EVENTS_LOG)) return;
+        if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EVENTS_LOG)) return;
         String tmp = "/data/ev.tmp";
         File src = SD.open(EVENTS_LOG, FILE_READ);
         File dst = SD.open(tmp, FILE_WRITE);
@@ -547,7 +595,9 @@ public:
     }
 
     void trimLog() {
-        if (!_mounted || !SD.exists(EVENTS_LOG)) return;
+        if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(EVENTS_LOG)) return;
         File f = SD.open(EVENTS_LOG, FILE_READ);
         if (!f) return;
         int total = 0;
@@ -567,6 +617,7 @@ public:
 
     void backupConfig() {
         if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
         File f = SD.open(CONFIG_BACKUP, FILE_WRITE);
         if (!f) return;
         JsonDocument doc;
@@ -579,19 +630,18 @@ public:
     }
 
     bool serveFile(WebServer& server, const String& path) {
-        if (!_mounted || !SD.exists(path)) return false;
+        if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
+        if (!SD.exists(path)) return false;
         File f = SD.open(path, FILE_READ);
         if (!f || f.isDirectory()) { if(f)f.close(); return false; }
         server.sendHeader("Cache-Control", "max-age=60");
         server.streamFile(f, mime(path)); f.close(); return true;
     }
 
-    // Save a JPEG from ESP32-CAM; path: /photos/<uid>_<YYYYMMDD>_<HHMMSS>.jpg
-    // happenedAt: ISO timestamp from the event log (e.g. "2026-08-04T14:30:22Z").
-    // When provided, the photo filename is derived from it so it matches exactly.
-    bool savePhoto(const String& uid, const uint8_t* data, size_t len,
-                   const String& happenedAt = "") {
-        if (!_mounted || len == 0) return false;
+    // Builds /photos/<uid>_<YYYYMMDD>_<HHMMSS>.jpg from happenedAt (ISO
+    // timestamp from the event log) or the live clock as a fallback.
+    String photoPath(const String& uid, const String& happenedAt) {
         char path[72];
         if (happenedAt.length() >= 19) {
             // Derive filename from the same timestamp used in the event log.
@@ -611,20 +661,27 @@ public:
             else
                 snprintf(path, sizeof(path), "/photos/%s_%lu.jpg", uid.c_str(), millis());
         }
+        return String(path);
+    }
 
-        File f = SD.open(path, FILE_WRITE);
-        if (!f) {
-            Logger.log(LOG_ERROR, "SD", "Cannot create photo file", String(path));
-            return false;
-        }
-        size_t written = f.write(data, len);
-        f.close();
-        if (written != len) {
-            Logger.logf(LOG_ERROR, "SD", "Photo write incomplete: %u/%u bytes", written, len);
-            return false;
-        }
-        Logger.logf(LOG_INFO, "SD", "Photo saved: %s  (%u bytes)", path, written);
-        return true;
+    // Open a new photo file for streaming writes — caller (CamUart) writes
+    // chunks to the returned File as they arrive over UART, instead of
+    // buffering the whole JPEG in RAM first. outPath is filled in for
+    // logging and for abortPhoto() if the transfer fails partway.
+    File openPhotoFile(const String& uid, const String& happenedAt, String& outPath) {
+        if (!_mounted) return File();
+        SdIoLock _lk(_ioMutex);
+        outPath = photoPath(uid, happenedAt);
+        File f = SD.open(outPath, FILE_WRITE);
+        if (!f) Logger.log(LOG_ERROR, "SD", "Cannot create photo file", outPath);
+        return f;
+    }
+
+    // Discard a photo file left partially written by a failed capture.
+    void abortPhoto(File& f, const String& path) {
+        SdIoLock _lk(_ioMutex);
+        if (f) f.close();
+        if (path.length()) SD.remove(path);
     }
 
     String resolveAdminPath(const String& uri) {
@@ -635,6 +692,7 @@ public:
 
     void clearEvents() {
         if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
         SD.remove(EVENTS_LOG);
     }
 
@@ -679,6 +737,7 @@ public:
     // Employees are numbered 1..N — the same numbering used by deleteEmployeeByIndex().
     void printEmployees() {
         if (!_mounted) { Serial.println("  SD not mounted"); return; }
+        SdIoLock _lk(_ioMutex);
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) { Serial.println("  Cannot open employees file"); return; }
         JsonDocument doc;
@@ -710,10 +769,50 @@ public:
         Serial.println();
     }
 
+    // ── Serial console: pretty-print all registered cards ───────────────────────
+    void printCards() {
+        if (!_mounted) { Serial.println("  SD not mounted"); return; }
+        SdIoLock _lk(_ioMutex);
+        File f = SD.open(EMPLOYEES_FILE, FILE_READ);
+        if (!f) { Serial.println("  Cannot open employees file"); return; }
+        JsonDocument doc;
+        if (deserializeJson(doc, f)) { f.close(); Serial.println("  Parse error"); return; }
+        f.close();
+
+        struct Row { String uid, type, owner, status; };
+        std::vector<Row> rows;
+        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
+            String name = String(emp["first_name"] | "") + " " + String(emp["last_name"] | "");
+            name.trim();
+            for (JsonObject c : emp["cards"].as<JsonArray>())
+                rows.push_back({ String(c["uid"] | ""), String(c["type"] | ""),
+                                  name, String(c["status"] | "active") });
+        }
+        if (rows.empty()) { Serial.println("  No cards registered."); return; }
+
+        Serial.printf("\n  %d card(s):\n", (int)rows.size());
+        const char* sep = "  +----+------------------+--------+------------------------+--------+";
+        Serial.println(sep);
+        Serial.println("  | #  | UID              | Type   | Owner                  | Status |");
+        Serial.println(sep);
+        int i = 1;
+        for (auto& r : rows) {
+            String uid  = utf8pad(utf8trunc(r.uid,    16), 16);
+            String type = utf8pad(utf8trunc(r.type,    6),  6);
+            String own  = utf8pad(utf8trunc(r.owner,  22), 22);
+            String st   = utf8pad(utf8trunc(r.status,  6),  6);
+            Serial.printf("  | %-2d | %s | %s | %s | %s |\n",
+                          i++, uid.c_str(), type.c_str(), own.c_str(), st.c_str());
+        }
+        Serial.println(sep);
+        Serial.println();
+    }
+
     // Delete the employee at 1-based position `index` (as shown by printEmployees).
     // Returns true if found and deleted.
     bool deleteEmployeeByIndex(int index) {
         if (!_mounted || index < 1) return false;
+        SdIoLock _lk(_ioMutex);
         JsonDocument doc;
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) return false;
@@ -733,6 +832,7 @@ public:
     // Delete every file in /photos — used by factory reset
     void deleteAllPhotos() {
         if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
         File dir = SD.open("/photos");
         if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return; }
         std::vector<String> paths;
@@ -750,6 +850,7 @@ public:
     // Delete all photos whose filename UID prefix matches any card of the given employee
     void deletePhotosForEmployee(const String& localId) {
         if (!_mounted) return;
+        SdIoLock _lk(_ioMutex);
         // Collect UIDs for this employee
         std::vector<String> uids;
         {
@@ -797,3 +898,13 @@ public:
         }
     }
 } SdManager;
+
+// RAII guard for callers outside SdManagerClass that need the lock held
+// across several calls plus raw File I/O of their own (e.g. CamUart
+// streaming photo chunks directly to a File — the individual write() calls
+// aren't SdManager methods, so they need an explicit outer hold).
+struct SdManagerLock {
+    bool held;
+    SdManagerLock(uint32_t timeoutMs = 3000) { held = SdManager.lock(timeoutMs); }
+    ~SdManagerLock() { if (held) SdManager.unlock(); }
+};

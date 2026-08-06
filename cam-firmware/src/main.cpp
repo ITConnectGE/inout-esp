@@ -6,8 +6,16 @@
  *
  * Protocol:
  *   Main → CAM : "PING\n"           → "CAM_READY\n"
- *   Main → CAM : "CAPTURE <uid>\n"  → "READY <len>\n" + <len> raw JPEG bytes
+ *   Main → CAM : "CAPTURE <uid>\n"  → "READY <len> <checksum>\n" + <len> raw JPEG bytes
  *                                   → "ERROR\n"  on failure
+ *
+ * The frame is kept in memory (not released) after sending, so a corrupted
+ * transfer can be retried without re-capturing — the retried image is byte-
+ * identical to the original, still matching the actual tap moment:
+ *   Main → CAM : "ACK\n"    → frame released, ready for next CAPTURE
+ *   Main → CAM : "RETRY\n"  → resends the SAME cached frame (same header)
+ * A held frame is released automatically on the next CAPTURE if the main
+ * board never sends ACK/RETRY (e.g. gave up after too many retries).
  */
 
 #include <Arduino.h>
@@ -32,6 +40,22 @@
 #define PCLK_GPIO_NUM    22
 
 static bool _camOk = false;
+static camera_fb_t* _pendingFb = nullptr;
+static uint32_t _pendingChecksum = 0;
+
+// Simple additive checksum — cheap on both ends, catches the burst/
+// truncation errors a noisy UART link actually produces.
+static uint32_t checksum32(const uint8_t* data, size_t len) {
+    uint32_t sum = 0;
+    for (size_t i = 0; i < len; i++) sum += data[i];
+    return sum;
+}
+
+static void sendFrame(camera_fb_t* fb, uint32_t sum) {
+    Serial.printf("READY %u %u\n", (unsigned)fb->len, (unsigned)sum);
+    Serial.write(fb->buf, fb->len);
+    Serial.flush();
+}
 
 static bool initCamera() {
     camera_config_t cfg;
@@ -88,8 +112,22 @@ void loop() {
         return;
     }
 
+    if (cmd == "ACK") {
+        if (_pendingFb) { esp_camera_fb_return(_pendingFb); _pendingFb = nullptr; }
+        return;
+    }
+
+    if (cmd == "RETRY") {
+        if (_pendingFb) sendFrame(_pendingFb, _pendingChecksum);
+        else            Serial.println("ERROR");
+        return;
+    }
+
     if (cmd.startsWith("CAPTURE")) {
         if (!_camOk) { Serial.println("ERROR"); return; }
+
+        // Release any unacknowledged previous frame before capturing a new one
+        if (_pendingFb) { esp_camera_fb_return(_pendingFb); _pendingFb = nullptr; }
 
         // Discard one stale frame so the next one is fresh
         camera_fb_t* stale = esp_camera_fb_get();
@@ -98,11 +136,10 @@ void loop() {
         camera_fb_t* fb = esp_camera_fb_get();
         if (!fb) { Serial.println("ERROR"); return; }
 
-        // Header line, then raw JPEG bytes
-        Serial.printf("READY %u\n", (unsigned)fb->len);
-        Serial.write(fb->buf, fb->len);
-        Serial.flush();
-
-        esp_camera_fb_return(fb);
+        // Held (not returned) until ACK/RETRY/next-CAPTURE — lets a
+        // corrupted transfer be retried without re-capturing.
+        _pendingFb = fb;
+        _pendingChecksum = checksum32(fb->buf, fb->len);
+        sendFrame(fb, _pendingChecksum);
     }
 }
