@@ -22,11 +22,10 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiManager.h>
-#include <Preferences.h>
 #include "config.h"
 #include "sd_manager.h"
 #include "logger.h"
+#include "web_server.h"
 
 struct SerialCmdClass {
 private:
@@ -103,33 +102,16 @@ private:
         Serial.println();
     }
 
+    // Both commands delegate to WebServerManager.performReset() — the same
+    // routine POST /api/reset uses — so serial and web resets can't drift.
     void doForgetWifi() {
         Serial.println("[CMD] Erasing WiFi credentials...");
-        WiFiManager wm;
-        wm.resetSettings();
-        delay(500);
-        Serial.println("[CMD] Restarting...");
-        ESP.restart();
+        WebServerManager.performReset(false);
     }
 
     void doFactoryReset() {
         Serial.println("[CMD] === FACTORY RESET ===");
-        Serial.println("[CMD] Clearing SD data...");
-        SdManager.clearEvents();
-        SdManager.deleteAllPhotos();
-        Logger.clearLog();
-        // Remove whitelist and employees so they re-sync from server on next boot
-        SD.remove("/data/whitelist.json");
-        SD.remove("/data/employees.json");
-        SD.remove("/data/time.json");
-        SD.remove("/data/config.json");
-        Serial.println("[CMD] Clearing NVS config...");
-        Preferences p; p.begin("cp", false); p.clear(); p.end();
-        Serial.println("[CMD] Erasing WiFi credentials...");
-        WiFiManager wm; wm.resetSettings();
-        delay(500);
-        Serial.println("[CMD] Restarting — device will enter WiFi setup mode...");
-        ESP.restart();
+        WebServerManager.performReset(true);
     }
 
     // ── Dispatcher ────────────────────────────────────────────────────────────

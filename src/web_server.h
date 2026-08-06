@@ -297,30 +297,7 @@ private:
         String type = _server.hasArg("type") ? _server.arg("type") : "wifi";
         jsend(200, "{\"ok\":true}");
         delay(500); // let HTTP response flush before we start touching hardware
-
-        // Stop the sync task so it can't hold SD files open during the wipe
-        if (hSync != nullptr) vTaskSuspend(hSync);
-
-        if (type == "all") {
-            // 1. Clear NVS config
-            Preferences p; p.begin("cp", false); p.clear(); p.end();
-            // 2. Wipe all SD data
-            if (SdManager.isMounted()) {
-                SD.remove(EMPLOYEES_FILE);
-                SD.remove(WHITELIST_FILE);
-                SD.remove(EVENTS_LOG);
-                SD.remove(ADMINS_FILE);
-                SD.remove(CONFIG_BACKUP);
-                SdManager.deleteAllPhotos();
-                Serial.println("[Reset] SD data wiped");
-            }
-            // 3. Recreate default admin (admin / 12345678)
-            AuthManager.begin();
-            Serial.println("[Reset] Default admin restored");
-        }
-        WiFiManager wm; wm.resetSettings();
-        delay(500); // let WiFi NVS erase commit to flash before hard reset
-        ESP.restart();
+        performReset(type == "all");
     }
 
     // ── POST /api/employees ───────────────────────────────────────────────────
@@ -680,6 +657,34 @@ private:
     }
 
 public:
+    // Shared by POST /api/reset and the serial `forget wifi` / `factory reset
+    // confirm` commands, so both entry points perform exactly the same wipe.
+    void performReset(bool fullWipe) {
+        // Stop the sync task so it can't hold SD files open during the wipe
+        if (hSync != nullptr) vTaskSuspend(hSync);
+
+        if (fullWipe) {
+            // 1. Clear NVS config
+            Preferences p; p.begin("cp", false); p.clear(); p.end();
+            // 2. Wipe all SD data
+            if (SdManager.isMounted()) {
+                SD.remove(EMPLOYEES_FILE);
+                SD.remove(WHITELIST_FILE);
+                SD.remove(EVENTS_LOG);
+                SD.remove(ADMINS_FILE);
+                SD.remove(CONFIG_BACKUP);
+                SdManager.deleteAllPhotos();
+                Serial.println("[Reset] SD data wiped");
+            }
+            // 3. Recreate default admin (admin / 12345678)
+            AuthManager.begin();
+            Serial.println("[Reset] Default admin restored");
+        }
+        WiFiManager wm; wm.resetSettings();
+        delay(500); // let WiFi NVS erase commit to flash before hard reset
+        ESP.restart();
+    }
+
     void begin() {
         const char* headers[] = {"X-Session-Token"};
         _server.collectHeaders(headers, 1);
