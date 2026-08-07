@@ -779,13 +779,24 @@ function hideErr(id){const e=document.getElementById(id);if(e)e.classList.remove
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 function headers(){return{'Content-Type':'application/json','X-Session-Token':TOKEN};}
-async function api(method,path,body){
+async function api(method,path,body,_retried){
   try{
     const r=await fetch(path,{method,headers:headers(),body:body?JSON.stringify(body):undefined});
     const d=await r.json();
     if(r.status===401){if(TOKEN)doLogout();return null;}
     return{ok:r.ok,status:r.status,data:d};
-  }catch(e){return{ok:false,status:0,data:{error:e.message}};}
+  }catch(e){
+    // Network-level failure — e.g. a stray connection reset (the device's web
+    // server handles one connection at a time and can occasionally race a
+    // request against closing the previous one). Safe to silently retry once
+    // for GET only: retrying a POST/PUT/DELETE could duplicate a mutating
+    // action if it actually landed server-side before the response was lost.
+    if(method==='GET' && !_retried){
+      await new Promise(res=>setTimeout(res,300));
+      return api(method,path,body,true);
+    }
+    return{ok:false,status:0,data:{error:e.message}};
+  }
 }
 async function lg(p){const r=await api('GET',p);return r?.data||null;}
 async function lpost(p,b){const r=await api('POST',p,b);return r?.data||null;}
