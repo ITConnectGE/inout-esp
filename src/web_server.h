@@ -607,7 +607,10 @@ private:
                 _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
                 _server.sendHeader("Pragma", "no-cache");
                 _server.sendHeader("Connection", "close");
-                _server.sendHeader("Content-Encoding", "gzip");
+                // streamFile() auto-adds Content-Encoding: gzip itself when
+                // the filename ends in .gz — adding it here too duplicates
+                // the header ("gzip, gzip"), which Firefox correctly refuses
+                // to decode (Chrome silently tolerates the duplicate).
                 _server.streamFile(f, "text/html");
                 f.close(); return;
             }
