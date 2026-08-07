@@ -1300,15 +1300,15 @@ async function assignCardToEmployee() {
   else toast('Error assigning card');
 }
 
-// Direct card assignment via local API
+// Direct card assignment via local API — uid is already known from the
+// earlier scan step, so this only needs the direct-assign endpoint.
+// (Do NOT also call /api/employees/card here: that arms a fresh
+// server-side pending-tap window waiting for a *new* physical tap, which
+// then hijacks the next real card read as a bogus registration capture
+// instead of a normal access grant.)
 async function SdManager_addCard(localId, uid, label, type) {
-  // We use the assign-card endpoint which writes directly to SD
-  // First start a capture session with this employee's localId
-  const r = await lpost('/api/employees/card', { local_id: localId, label, type });
-  // Then immediately resolve it with the already-known UID
-  // Since we have the UID from the scan, send it directly
-  const r2 = await lpost('/api/employees/card/assign', { local_id: localId, uid, label, type });
-  return r2?.ok;
+  const r = await lpost('/api/employees/card/assign', { local_id: localId, uid, label, type });
+  return r?.ok;
 }
 
 function validatePhone(input) {
