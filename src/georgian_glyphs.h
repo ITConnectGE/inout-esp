@@ -12,7 +12,7 @@ struct GeorgianGlyph {
 #define GEORGIAN_GLYPH_COUNT 33
 
 static const GeorgianGlyph GEORGIAN_GLYPHS[GEORGIAN_GLYPH_COUNT] = {
-    { "\xE1\x83\x90", {0b00000, 0b00000, 0b00100, 0b00010, 0b00001, 0b00001, 0b10001, 0b01110} }, // ა (Ani)
+    { "\xE1\x83\x90", {0b00000, 0b00000, 0b00000, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110} }, // ა (Ani)
     { "\xE1\x83\x91", {0b11000, 0b00100, 0b00100, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110} }, // ბ (Bani)
     { "\xE1\x83\x92", {0b01100, 0b10010, 0b00100, 0b01010, 0b10001, 0b10001, 0b10001, 0b01110} }, // გ (Gani)
     { "\xE1\x83\x93", {0b01110, 0b10001, 0b10001, 0b10001, 0b11110, 0b01100, 0b00010, 0b00001} }, // დ (Doni)
