@@ -636,6 +636,7 @@ public:
         File f = SD.open(path, FILE_READ);
         if (!f || f.isDirectory()) { if(f)f.close(); return false; }
         server.sendHeader("Cache-Control", "max-age=60");
+        server.sendHeader("Connection", "close");
         server.streamFile(f, mime(path)); f.close(); return true;
     }
 

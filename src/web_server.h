@@ -132,6 +132,13 @@ private:
         _server.sendHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
         _server.sendHeader("Access-Control-Allow-Headers",
                            "Content-Type,Authorization,X-Session-Token");
+        // Force the connection closed after every response. WebServer keeps
+        // TCP sockets open for HTTP/1.1 keep-alive by default, and the small
+        // lwIP socket pool (~10) gets exhausted by browsers holding several
+        // idle persistent connections open across the admin SPA's polling
+        // timers — once full, new accepts fail and pending writes hang with
+        // EAGAIN, wedging the whole HTTP stack until power-cycled.
+        _server.sendHeader("Connection", "close");
     }
 
     void jsend(int code, const String& body) {
@@ -585,6 +592,27 @@ private:
 
     // ── GET / and /admin ──────────────────────────────────────────────────────
     void handleRoot() {
+        // Prefer the pre-gzipped page when the browser supports it (all of
+        // them do) — 96KB → ~21KB. Shorter SD-streaming window means less
+        // time holding the SD bus and less overlap with the background
+        // sync task's TLS handshake, on top of the bandwidth saving.
+        bool wantsGzip = SdManager.isMounted()
+            && _server.hasHeader("Accept-Encoding")
+            && _server.header("Accept-Encoding").indexOf("gzip") >= 0
+            && SD.exists("/www/index.html.gz");
+        if (wantsGzip) {
+            File f = SD.open("/www/index.html.gz", FILE_READ);
+            if (f && f.size() > 0) {
+                Serial.printf("[Web] Serving / (gzip) from SD (%u bytes)\n", f.size());
+                _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+                _server.sendHeader("Pragma", "no-cache");
+                _server.sendHeader("Connection", "close");
+                _server.sendHeader("Content-Encoding", "gzip");
+                _server.streamFile(f, "text/html");
+                f.close(); return;
+            }
+            if (f) f.close();
+        }
         // Try SD first (combined login+admin page)
         if (SdManager.isMounted() && SD.exists("/www/index.html")) {
             File f = SD.open("/www/index.html", FILE_READ);
@@ -592,6 +620,7 @@ private:
                 Serial.printf("[Web] Serving / from SD (%u bytes)\n", f.size());
                 _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
                 _server.sendHeader("Pragma", "no-cache");
+                _server.sendHeader("Connection", "close");
                 _server.streamFile(f, "text/html");
                 f.close(); return;
             }
@@ -604,6 +633,7 @@ private:
         }
         // PROGMEM fallback — basic setup page when SD not available
         Serial.println("[Web] Serving / from PROGMEM (SD not mounted or file missing)");
+        _server.sendHeader("Connection", "close");
         _server.send_P(200, "text/html", PAGE_HTML);
     }
 
@@ -698,8 +728,8 @@ public:
     }
 
     void begin() {
-        const char* headers[] = {"X-Session-Token"};
-        _server.collectHeaders(headers, 1);
+        const char* headers[] = {"X-Session-Token", "Accept-Encoding"};
+        _server.collectHeaders(headers, 2);
 
         // SPIFFS not used — SD card serves all web content
 
@@ -757,18 +787,21 @@ public:
                     return;
                 }
                 if (SdManager.isMounted() && SdManager.serveFile(_server, uri)) return;
+                _server.sendHeader("Connection", "close");
                 _server.send(404, "text/plain", "Photo not found");
                 return;
             }
             // Serve any SD www file (JS, CSS, icons etc)
             if (SdManager.isMounted()) {
                 if (uri.indexOf("..") >= 0) {
+                    _server.sendHeader("Connection", "close");
                     _server.send(400, "text/plain", "Bad Request");
                     return;
                 }
                 String sdPath = "/www" + uri;
                 if (SdManager.serveFile(_server, sdPath)) return;
             }
+            _server.sendHeader("Connection", "close");
             _server.send(404,"text/plain","Not found");
         });
 

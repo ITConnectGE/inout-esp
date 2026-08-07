@@ -106,6 +106,21 @@ private:
         return prefix + body.substring(0, 120);
     }
 
+    // Transport-level failure (code <= 0 means no HTTP response was ever
+    // received — DNS, connect, or TLS handshake failed before the server
+    // could reply). HTTPClient::errorToString() turns opaque codes like
+    // -32512 into "SSL - Memory allocation failed" instead of a blank body,
+    // and the heap stats make a fragmentation-caused failure (small
+    // maxBlock despite plenty of free heap) visibly distinct from a real
+    // network outage right in the log line, instead of needing a separate
+    // heap dump correlated by hand afterward.
+    String transportErrMsg(int code) {
+        return "HTTP " + String(code) + " — " + HTTPClient::errorToString(code)
+             + " | heap=" + String(ESP.getFreeHeap())
+             + " min=" + String(ESP.getMinFreeHeap())
+             + " maxBlock=" + String(ESP.getMaxAllocHeap());
+    }
+
 public:
     // Persist UTC epoch to SD so reboots start with an approximate clock.
     void saveTimeToSD() {
@@ -163,7 +178,11 @@ public:
         if (!getLocalTime(&t, 100)) {
             char buf[24]; snprintf(buf, sizeof(buf), "~%lums", millis()); return buf;
         }
-        char buf[25]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
+        // getLocalTime() returns local (TZ-adjusted) time, not UTC — append
+        // the real offset (%z) instead of a literal "Z", otherwise the
+        // backend stores local time labelled as UTC and every timestamp
+        // ends up skewed by the TZ offset once converted back for display.
+        char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &t);
         return buf;
     }
 
@@ -218,7 +237,8 @@ public:
             Logger.logf(LOG_INFO, "SYNC", "Employees synced: %d record(s)", count);
             return count;
         }
-        Logger.log(LOG_ERROR, "SYNC", "Employees sync failed", serverErrMsg(code, respBody));
+        Logger.log(LOG_ERROR, "SYNC", "Employees sync failed",
+                   code > 0 ? serverErrMsg(code, respBody) : transportErrMsg(code));
         return -1;
     }
 
@@ -344,7 +364,8 @@ public:
                         batchSize, n, nPhotos);
             return batchSize;
         }
-        Logger.log(LOG_ERROR, "SYNC", "Events sync failed", serverErrMsg(code, respBody));
+        Logger.log(LOG_ERROR, "SYNC", "Events sync failed",
+                   code > 0 ? serverErrMsg(code, respBody) : transportErrMsg(code));
         return -1;
     }
 
@@ -364,7 +385,8 @@ public:
         if (code != 200) {
             String errBody = code > 0 ? http.getString() : "";
             http.end(); xSemaphoreGiveRecursive(_mutex);
-            Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed", serverErrMsg(code, errBody));
+            Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed",
+                       code > 0 ? serverErrMsg(code, errBody) : transportErrMsg(code));
             return false;
         }
         // Use server's Date header to set clock when NTP hasn't resolved yet.
@@ -415,7 +437,7 @@ public:
             Logger.log(LOG_WARN, "API", "Heartbeat failed",
                        serverErrMsg(code, http.getString()));
         } else {
-            Logger.log(LOG_WARN, "API", "Heartbeat: no response (connection failed)");
+            Logger.log(LOG_WARN, "API", "Heartbeat failed", transportErrMsg(code));
         }
         http.end();
         xSemaphoreGiveRecursive(_mutex);
