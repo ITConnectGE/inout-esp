@@ -8,8 +8,12 @@
  *
  * Tap:   Line 0: "OK GRANTED" / "NO DENIED"  (plain text, not icons — keeps
  *                all 8 CGRAM slots free for Georgian letters in the name)
- *        Line 1: employee name (Georgian-aware, scrolls if >LCD_COLS chars)
- *        Reverts to idle after TAP_TIMEOUT_MS (extended for long names)
+ *        Line 1: first name, then last name, shown as two sequential phases
+ *                (each Georgian-aware, scrolls if >LCD_COLS chars) — showing
+ *                "First Last" combined in one scroll routinely needs more
+ *                distinct Georgian letters than the LCD's 8 CGRAM slots
+ *                allow at once, so splitting gives each part its own budget.
+ *        Reverts to idle after both phases have shown (extended for long names)
  */
 
 #include <Arduino.h>
@@ -22,6 +26,7 @@
 #define TAP_TIMEOUT_MS 4000
 #define LCD_COLS 16
 #define GEORGIAN_SCROLL_STEP_MS 400
+#define NAME_PHASE_MIN_MS 1800
 
 struct LcdDisplayClass {
 private:
@@ -32,6 +37,11 @@ private:
     uint32_t _tapTimeoutMs  = TAP_TIMEOUT_MS;
     bool     _showingNotice = false;
     uint32_t _noticeUntil   = 0;
+    // First/last name shown as two sequential phases instead of one
+    // combined scroll — see showTap() for why.
+    String   _nameFirst, _nameLast;
+    bool     _showingLastPart   = false;
+    uint32_t _namePhaseSwitchAt = 0;
     uint32_t _lastClockMs   = 0;
     String   _fallback      = "";
     uint32_t _fallbackUntil = 0;
@@ -100,6 +110,18 @@ public:
         if (_showingTap) {
             // Slide the name into view if it's longer than the display width.
             GeorgianLcd.tick(GEORGIAN_SCROLL_STEP_MS);
+            // Switch from first-name to last-name phase partway through the
+            // tap display. Each phase is its own startScroll() call, so it
+            // gets a fresh 8-slot CGRAM budget scoped to just that name part
+            // — showing "First Last" combined in one scroll routinely needs
+            // more than 8 distinct Georgian letters and falls back to '?'.
+            if (_namePhaseSwitchAt && !_showingLastPart && millis() >= _namePhaseSwitchAt) {
+                _showingLastPart = true;
+                GeorgianLcd.startScroll(1, LCD_COLS, _nameLast);
+                uint32_t lastNeeded = GeorgianLcd.scrollDurationMs(GEORGIAN_SCROLL_STEP_MS) + 700;
+                uint32_t lastPhaseMs = lastNeeded > NAME_PHASE_MIN_MS ? lastNeeded : NAME_PHASE_MIN_MS;
+                _tapTimeoutMs = (uint32_t)(millis() - _tapShownAt) + lastPhaseMs;
+            }
             // Clear tap message after timeout
             if ((millis() - _tapShownAt) > _tapTimeoutMs) {
                 _lcd->clear();
@@ -132,12 +154,32 @@ public:
         if      (dir == "in")  line0 += " IN";
         else if (dir == "out") line0 += " OUT";
         printLine(0, line0);
-        GeorgianLcd.startScroll(1, LCD_COLS, name.length() > 0 ? name : "Unknown card");
+
+        // Show first name, then last name, as two sequential phases rather
+        // than scrolling "First Last" combined — see the phase-switch note
+        // in loop() for why. Only real names get split; the "Unknown card"
+        // fallback (empty name — denied/unrecognised tap) stays one phase.
+        bool hasName = name.length() > 0;
+        String shown = hasName ? name : "Unknown card";
+        int sp = hasName ? shown.indexOf(' ') : -1;
+        _nameFirst = sp > 0 ? shown.substring(0, sp) : shown;
+        _nameLast  = sp > 0 ? shown.substring(sp + 1) : "";
+        _nameLast.trim();
+        _showingLastPart = false;
+
+        GeorgianLcd.startScroll(1, LCD_COLS, _nameFirst);
         _showingTap = true;
         _tapShownAt = millis();
-        // Give long names enough time to scroll into view fully at least once
-        uint32_t neededMs = GeorgianLcd.scrollDurationMs(GEORGIAN_SCROLL_STEP_MS) + 700;
-        _tapTimeoutMs = neededMs > TAP_TIMEOUT_MS ? neededMs : TAP_TIMEOUT_MS;
+
+        uint32_t firstNeeded = GeorgianLcd.scrollDurationMs(GEORGIAN_SCROLL_STEP_MS) + 700;
+        uint32_t firstPhaseMs = firstNeeded > NAME_PHASE_MIN_MS ? firstNeeded : NAME_PHASE_MIN_MS;
+        if (_nameLast.length() > 0) {
+            _namePhaseSwitchAt = millis() + firstPhaseMs;
+            _tapTimeoutMs = firstPhaseMs; // extended when the last-name phase starts
+        } else {
+            _namePhaseSwitchAt = 0;
+            _tapTimeoutMs = firstPhaseMs > TAP_TIMEOUT_MS ? firstPhaseMs : TAP_TIMEOUT_MS;
+        }
     }
 
     void showBoot(const String& msg) {
