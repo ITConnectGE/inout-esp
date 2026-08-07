@@ -104,7 +104,9 @@ private:
         Serial.printf("  Free heap: %u bytes\n", ESP.getFreeHeap());
         struct tm t;
         if (getLocalTime(&t, 100)) {
-            char buf[25]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
+            // Local time, real offset — not UTC, so no literal "Z" (see
+            // ApiClient::nowIso() / Logger::timestamp() for the same fix).
+            char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &t);
             Serial.printf("  Time     : %s\n", buf);
         } else {
             Serial.printf("  Time     : not set\n");

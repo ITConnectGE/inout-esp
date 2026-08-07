@@ -30,8 +30,12 @@ private:
             snprintf(buf, sizeof(buf), "~%lums", millis());
             return String(buf);
         }
-        char buf[25];
-        strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
+        // getLocalTime() returns local (TZ-adjusted) time, not UTC — use the
+        // real offset (%z), not a literal "Z", or every log timestamp reads
+        // 4h ahead once something (dashboard, browser) converts it back
+        // assuming it really was UTC. Same bug/fix as ApiClient::nowIso().
+        char buf[32];
+        strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &t);
         return String(buf);
     }
 
