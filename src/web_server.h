@@ -721,7 +721,7 @@ public:
                 SdManager.deleteAllPhotos();
                 Serial.println("[Reset] SD data wiped");
             }
-            // 3. Recreate default admin (admin / 12345678)
+            // 3. Recreate default admin (admin / random password printed to serial)
             AuthManager.begin();
             Serial.println("[Reset] Default admin restored");
         }
