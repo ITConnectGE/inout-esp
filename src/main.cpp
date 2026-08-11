@@ -82,6 +82,64 @@ void handleTap(const String& uid, CardDirection dir) {
     delay(40); digitalWrite(DEFAULT_LED3, LOW);
 }
 
+// ── Buttons ───────────────────────────────────────────────────────────────────
+// Reset (VN): tap = normal restart, held 5s+ = factory reset.
+// Forget (VP): held 3s+ = erase WiFi credentials + restart.
+// Both hold-triggers fire once their threshold is crossed, no need to wait
+// for release. Both delegate to WebServerManager.performReset() so button,
+// web, and serial resets can't drift — see web_server.h.
+void handleButtons() {
+    static bool resetHeld = false, resetFactoryFired = false;
+    static unsigned long resetPressedAt = 0;
+    static bool forgetHeld = false, forgetFired = false;
+    static unsigned long forgetPressedAt = 0;
+
+    bool resetDown = digitalRead(PIN_BTN_RESET) == LOW;
+    if (resetDown && !resetHeld) {
+        delay(BTN_DEBOUNCE_MS);
+        if (digitalRead(PIN_BTN_RESET) == LOW) {
+            resetHeld = true;
+            resetFactoryFired = false;
+            resetPressedAt = millis();
+        }
+    } else if (resetDown && resetHeld && !resetFactoryFired) {
+        if (millis() - resetPressedAt >= RESET_FACTORY_HOLD_MS) {
+            resetFactoryFired = true;
+            Logger.log(LOG_WARN, "SYS", "Reset button held 5s+ — factory reset");
+            Lcd.showNotice(" Factory reset", " ...", 1500);
+            for (int f : {2000, 1500, 1000}) { tone(DEFAULT_BUZZ, f, 120); delay(160); }
+            WebServerManager.performReset(true);  // restarts device, does not return
+        }
+    } else if (!resetDown && resetHeld) {
+        resetHeld = false;
+        if (!resetFactoryFired) {
+            Logger.log(LOG_INFO, "SYS", "Reset button pressed — restarting");
+            delay(100);
+            ESP.restart();
+        }
+    }
+
+    bool forgetDown = digitalRead(PIN_BTN_FORGET) == LOW;
+    if (forgetDown && !forgetHeld) {
+        delay(BTN_DEBOUNCE_MS);
+        if (digitalRead(PIN_BTN_FORGET) == LOW) {
+            forgetHeld = true;
+            forgetFired = false;
+            forgetPressedAt = millis();
+        }
+    } else if (forgetDown && forgetHeld && !forgetFired) {
+        if (millis() - forgetPressedAt >= FORGET_HOLD_MS) {
+            forgetFired = true;
+            Logger.log(LOG_WARN, "SYS", "Forget-network button held 3s+ — forgetting WiFi");
+            Lcd.showNotice(" Forgetting", " WiFi...", 1500);
+            tone(DEFAULT_BUZZ, 1500, 150); delay(200);
+            WebServerManager.performReset(false);  // restarts device, does not return
+        }
+    } else if (!forgetDown && forgetHeld) {
+        forgetHeld = false;
+    }
+}
+
 // ── Sync + heartbeat task ─────────────────────────────────────────────────────
 void syncTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(10000));
@@ -115,6 +173,9 @@ void setup() {
     for (int p : {DEFAULT_LED1, DEFAULT_LED2, DEFAULT_LED3}) {
         pinMode(p, OUTPUT); digitalWrite(p, LOW);
     }
+    // External pull-ups on VN/VP — plain INPUT (these pins have no internal pulls).
+    pinMode(PIN_BTN_RESET, INPUT);
+    pinMode(PIN_BTN_FORGET, INPUT);
 
     // Load config first — needed for CS pin values
     Config.load();
@@ -214,6 +275,7 @@ void loop() {
     WebServerManager.loop();
     Relay.loop();
     Lcd.loop();
+    handleButtons();
     String uid;
     if (NfcReader.poll(READER_IN,  uid)) handleTap(uid, DIR_IN);
     if (NfcReader.poll(READER_OUT, uid)) handleTap(uid, DIR_OUT);

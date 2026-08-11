@@ -41,6 +41,15 @@
 #define DEFAULT_RELAY_MS 3000
 #define DEFAULT_SERVER  ""
 
+// ── Buttons ──────────────────────────────────────────────────────────────────
+// VN/VP (GPIO39/36) are input-only, no internal pull resistor — external
+// pull-ups are required. Idle = HIGH, pressed = LOW.
+#define PIN_BTN_RESET          39   // VN — tap = reset, hold 5s+ = factory reset
+#define PIN_BTN_FORGET         36   // VP — hold 3s+ = forget WiFi credentials + restart
+#define BTN_DEBOUNCE_MS        50
+#define RESET_FACTORY_HOLD_MS  5000
+#define FORGET_HOLD_MS         3000
+
 struct ConfigData {
     String serverUrl;
     String deviceToken;
