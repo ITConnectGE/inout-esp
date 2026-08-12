@@ -219,6 +219,10 @@ void setup() {
     // ── 6. Relay ──────────────────────────────────────────────────────────────
     Relay.begin(Config.relayPin);
 
+    // Serial task starts here so commands remain responsive during the
+    // blocking WiFiManager autoConnect that follows.
+    xTaskCreate(serialTask, "serial", 8192, nullptr, 2, nullptr);
+
     // ── 7. WiFi ───────────────────────────────────────────────────────────────
     Lcd.showBoot("WiFi setup...");
     WiFiManager wm;
@@ -264,8 +268,7 @@ void setup() {
     CamUart.begin();
 
     // ── 10. Background tasks ──────────────────────────────────────────────────
-    xTaskCreate(serialTask, "serial", 8192, nullptr, 2, nullptr);
-    xTaskCreate(syncTask,   "sync",   8192, nullptr, 1, &hSync);
+    xTaskCreate(syncTask, "sync", 8192, nullptr, 1, &hSync);
 
     feedbackBoot();
     Lcd.showReady();
