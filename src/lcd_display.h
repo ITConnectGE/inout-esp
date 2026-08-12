@@ -98,7 +98,7 @@ public:
         GeorgianLcd.begin(_lcd);         // no icons — all 8 CGRAM slots free for Georgian glyphs
         _found = true;
         // Show clean boot message
-        printLine(0, "  InOut v0.4.2");
+        printLine(0, "  InOut v0.4.3");
         printLine(1, "  Starting...   ");
         _lastClockMs = millis();
     }
@@ -184,7 +184,7 @@ public:
 
     void showBoot(const String& msg) {
         if (!_found) return;
-        printLine(0, "  InOut v0.4.2");
+        printLine(0, "  InOut v0.4.3");
         printLine(1, msg.substring(0, LCD_COLS));
     }
 

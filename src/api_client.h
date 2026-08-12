@@ -419,7 +419,7 @@ public:
         http.begin(wcs, Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
-        doc["firmware"]        = "0.4.2";
+        doc["firmware"]        = "0.4.3";
         doc["ip"]              = WiFi.localIP().toString();
         doc["rssi"]            = WiFi.RSSI();
         doc["config_version"]  = Config.configVersion;

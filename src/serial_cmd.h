@@ -56,7 +56,7 @@ private:
     void printHelp() {
         Serial.println();
         hr();
-        Serial.println("  InOut v0.4.2 — Serial Commands");
+        Serial.println("  InOut v0.4.3 — Serial Commands");
         hr();
         Serial.println("  help                      This list");
         Serial.println("  status <null|nfc|all>     Device status, NFC reader check, or both");
@@ -84,7 +84,7 @@ private:
         hr();
         Serial.println("  Status");
         hr();
-        Serial.printf("  Firmware : v0.4.2\n");
+        Serial.printf("  Firmware : v0.4.3\n");
         Serial.printf("  Uptime   : %lu s\n", millis() / 1000);
         bool online = WiFi.status() == WL_CONNECTED;
         Serial.printf("  WiFi     : %s", online ? "connected" : "offline");
