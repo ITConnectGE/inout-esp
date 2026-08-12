@@ -333,8 +333,6 @@ void setup() {
     // ── 4. LCD on I2C ─────────────────────────────────────────────────────────
     Lcd.begin();
     _lcdFound = Lcd.isFound();
-    Lcd.showBoot("OTA v" FIRMWARE_VERSION "!");
-    delay(2000);
     Lcd.showBoot("Booting...");
 
     // SPIFFS not used — all web content served from SD card
