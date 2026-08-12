@@ -14,7 +14,7 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
-#define FIRMWARE_VERSION "0.4.4"
+#define FIRMWARE_VERSION "0.4.5"
 
 // ── VSPI — PN532 ─────────────────────────────────────────────────────────────
 #define PIN_VSPI_SCK   18
