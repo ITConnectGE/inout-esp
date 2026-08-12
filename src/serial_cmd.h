@@ -11,7 +11,7 @@
  *   config
  *   restart
  *   open                                 Trigger relay (hardware test)
- *   nfc status                           Live re-check both PN532 readers
+ *   status <null|nfc|all>                Device status, NFC reader check, or both
  *   sync                                 Force whitelist+events+employees sync now
  *   set server <url>
  *   set token <token>
@@ -58,11 +58,10 @@ private:
         Serial.println("  InOut v0.4.2 — Serial Commands");
         hr();
         Serial.println("  help                      This list");
-        Serial.println("  status                    Device status");
+        Serial.println("  status <null|nfc|all>     Device status, NFC reader check, or both");
         Serial.println("  config                    Dump current configuration");
         Serial.println("  restart                   Restart ESP32");
         Serial.println("  open                      Trigger relay (hardware test)");
-        Serial.println("  nfc status                Live re-check both PN532 readers");
         Serial.println("  sync                      Force whitelist+events+employees sync now");
         Serial.println("  set <server|token|tz> <value>     Set backend URL, device token, or IANA timezone");
         Serial.println("  forget wifi               Erase WiFi credentials + restart");
@@ -225,6 +224,13 @@ private:
         } else if (lo == "status") {
             printStatus();
 
+        } else if (lo == "status nfc") {
+            doNfcStatus();
+
+        } else if (lo == "status all") {
+            printStatus();
+            doNfcStatus();
+
         } else if (lo == "config") {
             Config.printConfig();
 
@@ -235,9 +241,6 @@ private:
 
         } else if (lo == "open") {
             doOpen();
-
-        } else if (lo == "nfc status") {
-            doNfcStatus();
 
         } else if (lo == "sync") {
             doSync();
