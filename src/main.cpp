@@ -151,6 +151,12 @@ void serialTask(void*) {
 }
 
 // ── Sync + heartbeat task ─────────────────────────────────────────────────────
+// Each tap is decided locally and written to SD (processCard). Photos are saved
+// to SD by CamUart. This task is the only path that sends data to the server:
+//   events  → POST /device/events/batch  (multipart, photos[N] attached)
+//   employees → POST /device/employees/batch
+//   whitelist ← GET /device/sync
+// No direct POST /device/events calls anywhere — one tap = one batch entry.
 void syncTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(10000));
     for (int i = 0; i < 30 && !ApiClient.isNtpSynced(); i++) {
@@ -162,7 +168,15 @@ void syncTask(void*) {
     }
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
-        ApiClient.syncEvents();
+        // Drain all pending events in batches of 10 (each with its photo if
+        // one exists). Loop until the queue is empty rather than sending just
+        // one batch per cycle — after a long offline period this clears the
+        // whole backlog in a single sync pass instead of many 30s rounds.
+        // Cap at 100 iterations (~1000 events) so a corrupt log can't stall
+        // the task forever; markAllSynced() already drops bad-timestamp events.
+        for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
+            if (ApiClient.syncEvents() <= 0) break;
+        }
         ApiClient.syncEmployees();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
