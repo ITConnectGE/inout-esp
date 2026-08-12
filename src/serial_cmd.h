@@ -32,6 +32,7 @@
  *   factory reset confirm
  *   new factory password                 Rotate factory password (active on next factory reset)
  *   mute / unmute                        Silence or re-enable the buzzer (RAM only, resets on reboot)
+ *   update <url> <version>               Download and flash firmware from URL
  */
 
 #include <Arduino.h>
@@ -39,6 +40,7 @@
 #include <vector>
 #include "config.h"
 extern bool _buzzerMuted;
+extern void performOta(const String& url, const String& version);
 #include "sd_manager.h"
 #include "logger.h"
 #include "web_server.h"
@@ -79,6 +81,7 @@ private:
         Serial.println("  new factory password      Generate new factory password (active on next reset)");
         Serial.println("  mute                      Silence the buzzer");
         Serial.println("  unmute                    Re-enable the buzzer");
+        Serial.println("  update <url> <version>    Download and flash firmware from URL");
         hr();
         Serial.println();
     }
@@ -359,6 +362,22 @@ private:
         } else if (lo == "unmute") {
             _buzzerMuted = false;
             Serial.println("[CMD] Buzzer unmuted");
+
+        } else if (lo.startsWith("update ")) {
+            String args = cmd.substring(7); args.trim();
+            int sp = args.indexOf(' ');
+            if (sp < 1) {
+                Serial.println("[CMD] Usage: update <url> <version>");
+            } else {
+                String url = args.substring(0, sp);
+                String ver = args.substring(sp + 1); ver.trim();
+                if (url.length() == 0 || ver.length() == 0) {
+                    Serial.println("[CMD] Usage: update <url> <version>");
+                } else {
+                    Serial.printf("[CMD] Starting OTA → v%s\n", ver.c_str());
+                    performOta(url, ver);
+                }
+            }
 
         } else if (lo.length() > 0) {
             Serial.printf("[CMD] Unknown command: \"%s\"  (type 'help' for list)\n", cmd.c_str());
