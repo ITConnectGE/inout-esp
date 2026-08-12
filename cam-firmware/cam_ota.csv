@@ -1,0 +1,8 @@
+# cam_ota.csv — 4 MB flash, dual OTA, no SPIFFS
+# Each app partition is 0x1F0000 (1.875 MB) — larger than min_spiffs.csv's
+# 0x1E0000 (1.75 MB) to give the camera binary maximum headroom.
+# 64 KB of flash is unused at the end; that is intentional and harmless.
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x1F0000,
+app1,     app,  ota_1,   0x200000,0x1F0000,

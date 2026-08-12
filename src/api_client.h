@@ -131,6 +131,14 @@ public:
     String pendingOtaUrl;
     String pendingOtaVersion;
 
+    // Camera firmware version — set by main.cpp after CamUart.requestVersion().
+    // Included in heartbeat payload so the dashboard can track camera firmware.
+    String camFirmwareVersion;
+
+    // Camera OTA — set by sendHeartbeat(), consumed by syncTask in main.cpp.
+    String pendingCamOtaUrl;
+    String pendingCamOtaVersion;
+
     // Persist UTC epoch to SD so reboots start with an approximate clock.
     void saveTimeToSD() {
         if (!SdManager.isMounted()) return;
@@ -431,6 +439,8 @@ public:
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
         doc["firmware"]        = FIRMWARE_VERSION;
+        if (camFirmwareVersion.length() > 0)
+            doc["cam_firmware"] = camFirmwareVersion;
         doc["ip"]              = WiFi.localIP().toString();
         doc["rssi"]            = WiFi.RSSI();
         doc["config_version"]  = Config.configVersion;
@@ -449,6 +459,12 @@ public:
                 if (otaUrl && *otaUrl && otaVer && *otaVer) {
                     pendingOtaUrl     = otaUrl;
                     pendingOtaVersion = otaVer;
+                }
+                const char* camUrl = res["cam_ota_url"];
+                const char* camVer = res["cam_ota_version"];
+                if (camUrl && *camUrl && camVer && *camVer) {
+                    pendingCamOtaUrl     = camUrl;
+                    pendingCamOtaVersion = camVer;
                 }
             }
         } else if (code > 0) {

@@ -34,7 +34,8 @@
 
 struct CamUartClass {
 private:
-    bool _ready = false;
+    bool   _ready   = false;
+    String _version = "";
 
     // Member instead of a stack-local array in capture() — keeps the loop
     // task's call frame small instead of eating ~half its 8KB stack per
@@ -102,7 +103,55 @@ public:
         Serial.println("[CAM] Not found — camera capture disabled");
     }
 
-    bool isReady() { return _ready; }
+    bool   isReady()    { return _ready; }
+    String getVersion() { return _version; }
+
+    // Send WiFi credentials to the camera so it can connect during OTA.
+    // Uses two separate commands to avoid ambiguity with spaces in either field.
+    void sendWifiCreds(const String& ssid, const String& pass) {
+        if (!_ready) return;
+        while (Serial2.available()) Serial2.read();
+        Serial2.print("SET_WIFI_SSID "); Serial2.println(ssid);
+        readLine(1000);  // consume "OK"
+        Serial2.print("SET_WIFI_PASS "); Serial2.println(pass);
+        readLine(1000);  // consume "OK"
+    }
+
+    // Query the camera's firmware version string (e.g. "1.0.0").
+    void requestVersion() {
+        if (!_ready) return;
+        while (Serial2.available()) Serial2.read();
+        Serial2.println("CAM_VERSION");
+        String resp = readLine(2000);
+        if (resp.startsWith("VERSION ")) _version = resp.substring(8);
+    }
+
+    // Tell the camera to download and flash firmware from url. Blocks until
+    // the camera comes back online (OTA done + reboot) or 120 s timeout.
+    // Returns true if the camera responded to PING again (check getVersion()
+    // to determine whether the update actually succeeded).
+    bool requestOta(const String& url) {
+        if (!_ready) return false;
+        while (Serial2.available()) Serial2.read();
+        Serial2.print("CAM_OTA "); Serial2.println(url);
+        String ack = readLine(5000);
+        if (ack != "OTA_START") return false;
+
+        _ready = false;
+        // Poll PING every 3 s for up to 120 s. Camera replies CAM_READY once
+        // it has either rebooted into the new firmware or recovered from failure.
+        for (int i = 0; i < 40; i++) {
+            delay(3000);
+            while (Serial2.available()) Serial2.read();
+            Serial2.println("PING");
+            if (readLine(2000) == "CAM_READY") {
+                _ready = true;
+                requestVersion();
+                return true;
+            }
+        }
+        return false;  // timed out — camera did not come back
+    }
 
     // Trigger capture; saves JPEG to SD as /photos/<uid>_<timestamp>.jpg
     // happenedAt should be the same ISO timestamp logged for the card event so

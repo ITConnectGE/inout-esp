@@ -5,21 +5,27 @@
  * at 921600 baud and sends back a raw JPEG on each CAPTURE request.
  *
  * Protocol:
- *   Main → CAM : "PING\n"           → "CAM_READY\n"
- *   Main → CAM : "CAPTURE <uid>\n"  → "READY <len> <checksum>\n" + <len> raw JPEG bytes
- *                                   → "ERROR\n"  on failure
- *
- * The frame is kept in memory (not released) after sending, so a corrupted
- * transfer can be retried without re-capturing — the retried image is byte-
- * identical to the original, still matching the actual tap moment:
- *   Main → CAM : "ACK\n"    → frame released, ready for next CAPTURE
- *   Main → CAM : "RETRY\n"  → resends the SAME cached frame (same header)
- * A held frame is released automatically on the next CAPTURE if the main
- * board never sends ACK/RETRY (e.g. gave up after too many retries).
+ *   Main → CAM : "PING\n"                 → "CAM_READY\n"
+ *   Main → CAM : "CAPTURE <uid>\n"        → "READY <len> <checksum>\n" + <len> bytes
+ *                                          → "ERROR\n" on failure
+ *   Main → CAM : "ACK\n"                  → frame released, ready for next CAPTURE
+ *   Main → CAM : "RETRY\n"                → resends the same cached frame
+ *   Main → CAM : "SET_WIFI_SSID <ssid>\n" → saves SSID to NVS, replies "OK\n"
+ *   Main → CAM : "SET_WIFI_PASS <pass>\n" → saves password to NVS, replies "OK\n"
+ *   Main → CAM : "CAM_VERSION\n"          → replies "VERSION <version>\n"
+ *   Main → CAM : "CAM_OTA <url>\n"        → replies "OTA_START\n", connects WiFi,
+ *                                            downloads firmware, reboots on success;
+ *                                            replies "OTA_FAILED\n" and resumes on error
  */
 
 #include <Arduino.h>
+#include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPUpdate.h>
 #include "esp_camera.h"
+
+#define CAM_FIRMWARE_VERSION "1.0.0"
 
 // ── AI-Thinker ESP32-CAM pinout ───────────────────────────────────────────────
 #define PWDN_GPIO_NUM    32
@@ -42,9 +48,9 @@
 static bool _camOk = false;
 static camera_fb_t* _pendingFb = nullptr;
 static uint32_t _pendingChecksum = 0;
+static String _wifiSsid;
+static String _wifiPass;
 
-// Simple additive checksum — cheap on both ends, catches the burst/
-// truncation errors a noisy UART link actually produces.
 static uint32_t checksum32(const uint8_t* data, size_t len) {
     uint32_t sum = 0;
     for (size_t i = 0; i < len; i++) sum += data[i];
@@ -75,29 +81,76 @@ static bool initCamera() {
     cfg.ledc_timer    = LEDC_TIMER_0;
     cfg.ledc_channel  = LEDC_CHANNEL_0;
     cfg.pixel_format  = PIXFORMAT_JPEG;
-    // VGA (640×480) — good balance of detail vs transfer time
-    cfg.frame_size    = FRAMESIZE_HD;    // 1280×720
-    cfg.jpeg_quality  = 12;   // 0–63; lower = better quality
+    cfg.frame_size    = FRAMESIZE_HD;
+    cfg.jpeg_quality  = 12;
     cfg.fb_count      = 1;
     cfg.fb_location   = CAMERA_FB_IN_PSRAM;
     cfg.grab_mode     = CAMERA_GRAB_WHEN_EMPTY;
     return esp_camera_init(&cfg) == ESP_OK;
 }
 
+static void loadWifiCreds() {
+    Preferences p; p.begin("wf", true);
+    _wifiSsid = p.getString("ssid", "");
+    _wifiPass = p.getString("pass", "");
+    p.end();
+}
+
+// Download and flash new firmware over WiFi. Sends OTA_START immediately so
+// the main ESP knows the request was accepted. On success the device reboots
+// automatically into the new partition. On failure sends OTA_FAILED and
+// re-initialises the camera so normal capture can resume.
+static void performOta(const String& url) {
+    Serial.println("OTA_START");
+    Serial.flush();
+
+    if (_wifiSsid.isEmpty()) {
+        Serial.println("OTA_FAILED");
+        return;
+    }
+
+    // Release camera resources before connecting WiFi — frees PSRAM frame
+    // buffer and avoids DMA conflicts between the camera peripheral and WiFi.
+    if (_pendingFb) { esp_camera_fb_return(_pendingFb); _pendingFb = nullptr; }
+    esp_camera_deinit();
+    _camOk = false;
+
+    WiFi.begin(_wifiSsid.c_str(), _wifiPass.c_str());
+    for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(500);
+
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect(true);
+        _camOk = initCamera();
+        Serial.println("OTA_FAILED");
+        Serial.flush();
+        return;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    httpUpdate.rebootOnUpdate(true);
+    httpUpdate.update(client, url);
+
+    // Reaches here only on HTTP_UPDATE_FAILED or HTTP_UPDATE_NO_UPDATES.
+    // HTTP_UPDATE_OK reboots automatically before this line.
+    WiFi.disconnect(true);
+    _camOk = initCamera();
+    Serial.println("OTA_FAILED");
+    Serial.flush();
+}
+
 void setup() {
-    // UART0 is the only viable UART on AI-Thinker ESP32-CAM.
-    // Boot ROM messages at 115200 baud finish before this line runs.
     Serial.begin(921600);
     delay(200);
 
-    // Power on camera module
     pinMode(PWDN_GPIO_NUM, OUTPUT);
     digitalWrite(PWDN_GPIO_NUM, LOW);
     delay(100);
 
+    loadWifiCreds();
     _camOk = initCamera();
 
-    // Signal ready — main ESP32 polls with PING after its own WiFi init
     Serial.println("CAM_READY");
 }
 
@@ -109,35 +162,44 @@ void loop() {
 
     if (cmd == "PING") {
         Serial.println("CAM_READY");
-        return;
-    }
 
-    if (cmd == "ACK") {
+    } else if (cmd == "ACK") {
         if (_pendingFb) { esp_camera_fb_return(_pendingFb); _pendingFb = nullptr; }
-        return;
-    }
 
-    if (cmd == "RETRY") {
+    } else if (cmd == "RETRY") {
         if (_pendingFb) sendFrame(_pendingFb, _pendingChecksum);
         else            Serial.println("ERROR");
-        return;
-    }
 
-    if (cmd.startsWith("CAPTURE")) {
+    } else if (cmd.startsWith("SET_WIFI_SSID ")) {
+        _wifiSsid = cmd.substring(14);
+        Preferences p; p.begin("wf", false);
+        p.putString("ssid", _wifiSsid); p.end();
+        Serial.println("OK");
+
+    } else if (cmd.startsWith("SET_WIFI_PASS ")) {
+        _wifiPass = cmd.substring(14);
+        Preferences p; p.begin("wf", false);
+        p.putString("pass", _wifiPass); p.end();
+        Serial.println("OK");
+
+    } else if (cmd == "CAM_VERSION") {
+        Serial.println("VERSION " CAM_FIRMWARE_VERSION);
+
+    } else if (cmd.startsWith("CAM_OTA ")) {
+        String url = cmd.substring(8); url.trim();
+        performOta(url);
+
+    } else if (cmd.startsWith("CAPTURE")) {
         if (!_camOk) { Serial.println("ERROR"); return; }
 
-        // Release any unacknowledged previous frame before capturing a new one
         if (_pendingFb) { esp_camera_fb_return(_pendingFb); _pendingFb = nullptr; }
 
-        // Discard one stale frame so the next one is fresh
         camera_fb_t* stale = esp_camera_fb_get();
         if (stale) esp_camera_fb_return(stale);
 
         camera_fb_t* fb = esp_camera_fb_get();
         if (!fb) { Serial.println("ERROR"); return; }
 
-        // Held (not returned) until ACK/RETRY/next-CAPTURE — lets a
-        // corrupted transfer be retried without re-capturing.
         _pendingFb = fb;
         _pendingChecksum = checksum32(fb->buf, fb->len);
         sendFrame(fb, _pendingChecksum);

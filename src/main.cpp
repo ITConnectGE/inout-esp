@@ -39,9 +39,10 @@
 SPIClass spiVSPI(VSPI);
 SPIClass spiHSPI(HSPI);
 
-bool          _lcdFound      = false;
-bool          _buzzerMuted   = false;
-volatile bool _otaInProgress = false;
+bool          _lcdFound         = false;
+bool          _buzzerMuted      = false;
+volatile bool _otaInProgress    = false;
+volatile bool _camOtaInProgress = false;
 
 TaskHandle_t hSync = nullptr;
 
@@ -186,6 +187,43 @@ void performOta(const String& url, const String& version) {
     _otaInProgress = false;
 }
 
+// ── Camera OTA ────────────────────────────────────────────────────────────────
+// Called from syncTask or serialTask. Freezes NFC scans (loop skips polls)
+// but sync continues — the 30s cycle in syncTask is blocked only for the
+// duration of the camera download + reboot wait (≤120 s).
+void performCamOta(const String& url, const String& version) {
+    if (version.length() > 0 && version == CamUart.getVersion()) {
+        Logger.logf(LOG_INFO, "OTA", "Camera already on v%s — skipping", version.c_str());
+        return;
+    }
+    if (!CamUart.isReady()) {
+        Logger.log(LOG_WARN, "OTA", "Camera not online — aborting camera OTA");
+        return;
+    }
+    _camOtaInProgress = true;
+    String prevVer = CamUart.getVersion();
+    Logger.logf(LOG_INFO, "OTA", "Camera OTA → v%s", version.c_str());
+    Lcd.showNotice(" Camera update", " In progress...", 125000);
+
+    bool cameBack = CamUart.requestOta(url);
+
+    if (cameBack) {
+        String newVer = CamUart.getVersion();
+        ApiClient.camFirmwareVersion = newVer;
+        if (version.length() > 0 ? newVer == version : newVer != prevVer) {
+            Logger.logf(LOG_INFO, "OTA", "Camera updated → v%s", newVer.c_str());
+            Lcd.showNotice(" Camera updated", " v" + newVer, 4000);
+        } else {
+            Logger.logf(LOG_ERROR, "OTA", "Camera OTA failed (still v%s)", newVer.c_str());
+            Lcd.showNotice(" Cam update", " failed!", 4000);
+        }
+    } else {
+        Logger.log(LOG_ERROR, "OTA", "Camera did not come back after OTA");
+        Lcd.showNotice(" Cam update", " timed out!", 4000);
+    }
+    _camOtaInProgress = false;
+}
+
 // ── Serial command task ───────────────────────────────────────────────────────
 // Runs on its own core so blocking operations in the main loop (HTTP calls,
 // feedback delays, NFC polling) don't starve serial input.
@@ -243,6 +281,13 @@ void syncTask(void*) {
             ApiClient.pendingOtaUrl     = "";
             ApiClient.pendingOtaVersion = "";
             performOta(url, ver);
+        }
+        if (ApiClient.pendingCamOtaUrl.length() > 0) {
+            String url = ApiClient.pendingCamOtaUrl;
+            String ver = ApiClient.pendingCamOtaVersion;
+            ApiClient.pendingCamOtaUrl     = "";
+            ApiClient.pendingCamOtaVersion = "";
+            performCamOta(url, ver);
         }
         Lcd.setFallback(WiFi.localIP().toString());
     }
@@ -358,6 +403,13 @@ void setup() {
 
     // ── 9. ESP32-CAM on UART2 ────────────────────────────────────────────────
     CamUart.begin();
+    if (CamUart.isReady()) {
+        // WiFi.psk() returns the password of the currently connected network
+        // regardless of whether it was set via portal or 'set wifi' command.
+        CamUart.sendWifiCreds(WiFi.SSID(), WiFi.psk());
+        CamUart.requestVersion();
+        ApiClient.camFirmwareVersion = CamUart.getVersion();
+    }
 
     // ── 10. Background tasks ──────────────────────────────────────────────────
     xTaskCreate(syncTask, "sync", 8192, nullptr, 1, &hSync);
@@ -382,8 +434,10 @@ void loop() {
     Relay.loop();
     Lcd.loop();
     handleButtons();
-    String uid;
-    if (NfcReader.poll(READER_IN,  uid)) handleTap(uid, DIR_IN);
-    if (NfcReader.poll(READER_OUT, uid)) handleTap(uid, DIR_OUT);
+    if (!_camOtaInProgress) {
+        String uid;
+        if (NfcReader.poll(READER_IN,  uid)) handleTap(uid, DIR_IN);
+        if (NfcReader.poll(READER_OUT, uid)) handleTap(uid, DIR_OUT);
+    }
     delay(30);
 }

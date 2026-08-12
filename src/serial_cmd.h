@@ -41,6 +41,7 @@
 #include "config.h"
 extern bool _buzzerMuted;
 extern void performOta(const String& url, const String& version);
+extern void performCamOta(const String& url, const String& version);
 #include "sd_manager.h"
 #include "logger.h"
 #include "web_server.h"
@@ -81,7 +82,8 @@ private:
         Serial.println("  new factory password      Generate new factory password (active on next reset)");
         Serial.println("  mute                      Silence the buzzer");
         Serial.println("  unmute                    Re-enable the buzzer");
-        Serial.println("  update <url> <version>    Download and flash firmware from URL");
+        Serial.println("  update <url> <version>     Download and flash firmware from URL");
+        Serial.println("  cam update <url> <version> Download and flash camera firmware");
         hr();
         Serial.println();
     }
@@ -362,6 +364,22 @@ private:
         } else if (lo == "unmute") {
             _buzzerMuted = false;
             Serial.println("[CMD] Buzzer unmuted");
+
+        } else if (lo.startsWith("cam update ")) {
+            String args = cmd.substring(11); args.trim();
+            int sp = args.indexOf(' ');
+            if (sp < 1) {
+                Serial.println("[CMD] Usage: cam update <url> <version>");
+            } else {
+                String url = args.substring(0, sp);
+                String ver = args.substring(sp + 1); ver.trim();
+                if (url.length() == 0 || ver.length() == 0) {
+                    Serial.println("[CMD] Usage: cam update <url> <version>");
+                } else {
+                    Serial.printf("[CMD] Starting camera OTA → v%s\n", ver.c_str());
+                    performCamOta(url, ver);
+                }
+            }
 
         } else if (lo.startsWith("update ")) {
             String args = cmd.substring(7); args.trim();
