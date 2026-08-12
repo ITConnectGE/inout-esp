@@ -29,6 +29,7 @@
  *   reset password <username> <new_password>
  *   dump logs
  *   factory reset confirm
+ *   new factory password                 Rotate factory password (active on next factory reset)
  */
 
 #include <Arduino.h>
@@ -79,6 +80,7 @@ private:
         Serial.println("  reset password <user> <newpass>  Force-reset an admin's password");
         Serial.println("  dump logs                 Print device log to serial");
         Serial.println("  factory reset confirm     Full wipe + forget WiFi + restart");
+        Serial.println("  new factory password      Generate new factory password (active on next reset)");
         hr();
         Serial.println();
     }
@@ -325,6 +327,9 @@ private:
 
         } else if (lo == "factory reset") {
             Serial.println("[CMD] Type  factory reset confirm  to proceed.");
+
+        } else if (lo == "new factory password") {
+            AuthManager.generateNewFactoryPassword();
 
         } else if (lo.length() > 0) {
             Serial.printf("[CMD] Unknown command: \"%s\"  (type 'help' for list)\n", cmd.c_str());

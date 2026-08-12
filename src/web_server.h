@@ -711,7 +711,9 @@ public:
         if (fullWipe) {
             // 1. Clear NVS config
             Preferences p; p.begin("cp", false); p.clear(); p.end();
-            // 2. Wipe all SD data
+            // 2. Wipe all SD data except factory_pass.json — that file holds the
+            //    original credential and must survive factory reset so begin()
+            //    can restore admins.json from it rather than generating a new one.
             if (SdManager.isMounted()) {
                 SD.remove(EMPLOYEES_FILE);
                 SD.remove(WHITELIST_FILE);
@@ -721,7 +723,7 @@ public:
                 SdManager.deleteAllPhotos();
                 Serial.println("[Reset] SD data wiped");
             }
-            // 3. Recreate default admin (admin / random password printed to serial)
+            // 3. Restore default admin from the stored factory password.
             AuthManager.begin();
             Serial.println("[Reset] Default admin restored");
         }

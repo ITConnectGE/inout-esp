@@ -31,7 +31,8 @@
 #include <map>
 #include "logger.h"
 
-#define ADMINS_FILE "/data/admins.json"
+#define ADMINS_FILE       "/data/admins.json"
+#define FACTORY_PASS_FILE "/data/factory_pass.json"
 #define SESSION_TTL_MS (8UL * 60 * 60 * 1000)  // 8 hours
 
 struct Session {
@@ -110,32 +111,91 @@ private:
     }
 
 public:
+    // Returns the stored factory password, or "" if the file is missing/unreadable.
+    String readFactoryPassword() {
+        if (!SD.exists(FACTORY_PASS_FILE)) return "";
+        File f = SD.open(FACTORY_PASS_FILE, FILE_READ);
+        if (!f) return "";
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, f);
+        f.close();
+        if (err) return "";
+        return String(doc["password"] | "");
+    }
+
     void begin() {
+        // Resolve or create the factory password.
+        // factory_pass.json is written once (first flash) and never wiped by
+        // factory reset — it holds the original credential for all future resets.
+        String factoryPass = readFactoryPassword();
+        if (factoryPass.isEmpty()) {
+            // First flash: generate, persist, and print the factory password.
+            factoryPass = generatePassword();
+            JsonDocument fpDoc;
+            fpDoc["password"]   = factoryPass;
+            fpDoc["created_at"] = (long)(millis() / 1000);
+            File fpf = SD.open(FACTORY_PASS_FILE, FILE_WRITE);
+            if (fpf) { serializeJson(fpDoc, fpf); fpf.close(); }
+            else Logger.log(LOG_ERROR, "AUTH", "Cannot write factory_pass.json");
+            Serial.println("\n╔══════════════════════════════════════════╗");
+            Serial.println(  "║        FACTORY ADMIN CREDENTIALS         ║");
+            Serial.println(  "║  username : admin                        ║");
+            Serial.printf(   "║  password : %-28s ║\n", factoryPass.c_str());
+            Serial.println(  "║  Stored on SD — reused on factory reset  ║");
+            Serial.println(  "╚══════════════════════════════════════════╝\n");
+            Logger.log(LOG_WARN, "AUTH", "Factory password generated — stored in factory_pass.json");
+        }
+
         if (!SD.exists(ADMINS_FILE)) {
-            String initPass = generatePassword();
+            // admins.json absent — either first boot or after factory reset.
+            // Always restore from the factory password, never generate a new one.
             JsonDocument doc;
             JsonArray arr = doc["admins"].to<JsonArray>();
             JsonObject a = arr.add<JsonObject>();
             a["id"]                   = "1";
             a["username"]             = "admin";
-            a["password_hash"]        = sha256(initPass);
+            a["password_hash"]        = sha256(factoryPass);
             a["role"]                 = "super_admin";
             a["must_change_password"] = true;
-            a["created_at"]           = (long)(millis()/1000);
+            a["created_at"]           = (long)(millis() / 1000);
             File f = SD.open(ADMINS_FILE, FILE_WRITE);
             if (f) { serializeJson(doc, f); f.close(); }
             else Logger.log(LOG_ERROR, "AUTH", "Cannot write default admins.json");
-            // Print once to serial — operator must read this to log in
             Serial.println("\n╔══════════════════════════════════════════╗");
             Serial.println(  "║        DEFAULT ADMIN CREDENTIALS         ║");
             Serial.println(  "║  username : admin                        ║");
-            Serial.printf(   "║  password : %-28s ║\n", initPass.c_str());
+            Serial.printf(   "║  password : %-28s ║\n", factoryPass.c_str());
             Serial.println(  "║  Change password immediately after login ║");
             Serial.println(  "╚══════════════════════════════════════════╝\n");
-            Logger.log(LOG_WARN, "AUTH", "Default super admin created — check serial for password");
+            Logger.log(LOG_WARN, "AUTH", "Default super admin restored — check serial for password");
         } else {
             Logger.log(LOG_INFO, "AUTH", "Admins loaded from SD");
         }
+    }
+
+    // Generates a new factory password, saves it to factory_pass.json, and
+    // prints it to serial. Does NOT touch admins.json — takes effect only on
+    // the next factory reset (or when admins.json is absent on boot).
+    void generateNewFactoryPassword() {
+        String newPass = generatePassword();
+        JsonDocument fpDoc;
+        fpDoc["password"]   = newPass;
+        fpDoc["created_at"] = (long)(millis() / 1000);
+        File f = SD.open(FACTORY_PASS_FILE, FILE_WRITE);
+        if (!f) {
+            Logger.log(LOG_ERROR, "AUTH", "Cannot write factory_pass.json");
+            Serial.println("[CMD] ERROR: Cannot write factory_pass.json");
+            return;
+        }
+        serializeJson(fpDoc, f);
+        f.close();
+        Serial.println("\n╔══════════════════════════════════════════╗");
+        Serial.println(  "║        NEW FACTORY PASSWORD SET          ║");
+        Serial.println(  "║  username : admin                        ║");
+        Serial.printf(   "║  password : %-28s ║\n", newPass.c_str());
+        Serial.println(  "║  Active on next factory reset only       ║");
+        Serial.println(  "╚══════════════════════════════════════════╝\n");
+        Logger.log(LOG_WARN, "AUTH", "New factory password set — check serial");
     }
 
     // ── Login ─────────────────────────────────────────────────────────────────
