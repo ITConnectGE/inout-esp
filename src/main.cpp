@@ -140,6 +140,16 @@ void handleButtons() {
     }
 }
 
+// ── Serial command task ───────────────────────────────────────────────────────
+// Runs on its own core so blocking operations in the main loop (HTTP calls,
+// feedback delays, NFC polling) don't starve serial input.
+void serialTask(void*) {
+    for (;;) {
+        SerialCmd.loop();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 // ── Sync + heartbeat task ─────────────────────────────────────────────────────
 void syncTask(void*) {
     vTaskDelay(pdMS_TO_TICKS(10000));
@@ -254,7 +264,8 @@ void setup() {
     CamUart.begin();
 
     // ── 10. Background tasks ──────────────────────────────────────────────────
-    xTaskCreate(syncTask, "sync", 8192, nullptr, 1, &hSync);
+    xTaskCreate(serialTask, "serial", 8192, nullptr, 2, nullptr);
+    xTaskCreate(syncTask,   "sync",   8192, nullptr, 1, &hSync);
 
     feedbackBoot();
     Lcd.showReady();
@@ -271,7 +282,6 @@ void setup() {
 
 // ── Loop ─────────────────────────────────────────────────────────────────────
 void loop() {
-    SerialCmd.loop();
     WebServerManager.loop();
     Relay.loop();
     Lcd.loop();
