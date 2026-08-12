@@ -210,6 +210,7 @@ void performCamOta(const String& url, const String& version) {
     if (cameBack) {
         String newVer = CamUart.getVersion();
         ApiClient.camFirmwareVersion = newVer;
+        Serial.printf("[CAM] Firmware version: %s\n", newVer.c_str());
         if (version.length() > 0 ? newVer == version : newVer != prevVer) {
             Logger.logf(LOG_INFO, "OTA", "Camera updated → v%s", newVer.c_str());
             Lcd.showNotice(" Camera updated", " v" + newVer, 4000);
@@ -409,6 +410,7 @@ void setup() {
         CamUart.sendWifiCreds(WiFi.SSID(), WiFi.psk());
         CamUart.requestVersion();
         ApiClient.camFirmwareVersion = CamUart.getVersion();
+        Serial.printf("[CAM] Firmware version: %s\n", ApiClient.camFirmwareVersion.c_str());
     }
 
     // ── 10. Background tasks ──────────────────────────────────────────────────
