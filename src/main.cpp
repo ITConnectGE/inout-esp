@@ -38,30 +38,35 @@
 SPIClass spiVSPI(VSPI);
 SPIClass spiHSPI(HSPI);
 
-bool _lcdFound = false;
+bool _lcdFound    = false;
+bool _buzzerMuted = false;
 
 TaskHandle_t hSync = nullptr;
+
+void buzz(uint32_t freq, uint32_t durationMs) {
+    if (!_buzzerMuted) tone(DEFAULT_BUZZ, freq, durationMs);
+}
 
 // ── Feedback ──────────────────────────────────────────────────────────────────
 void feedbackGranted() {
     digitalWrite(DEFAULT_LED1, HIGH);
-    tone(DEFAULT_BUZZ, 1000, 100); delay(120);
-    tone(DEFAULT_BUZZ, 1500,  80); delay(90);
+    buzz(1000, 100); delay(120);
+    buzz(1500,  80); delay(90);
     digitalWrite(DEFAULT_LED1, LOW);
 }
 void feedbackDenied() {
     for (int i=0;i<3;i++) {
         digitalWrite(DEFAULT_LED2, HIGH);
-        tone(DEFAULT_BUZZ, 300, 80); delay(120);
+        buzz(300, 80); delay(120);
         digitalWrite(DEFAULT_LED2, LOW); delay(60);
     }
 }
 void feedbackRegister() {
-    for (int i=0;i<2;i++) { tone(DEFAULT_BUZZ, 1200, 60); delay(100); }
+    for (int i=0;i<2;i++) { buzz(1200, 60); delay(100); }
     digitalWrite(DEFAULT_LED1, HIGH); delay(200); digitalWrite(DEFAULT_LED1, LOW);
 }
 void feedbackBoot() {
-    for (int f : {700,900,1100,1400}) { tone(DEFAULT_BUZZ,f,55); delay(80); }
+    for (int f : {700,900,1100,1400}) { buzz(f, 55); delay(80); }
 }
 
 // ── Card tap ──────────────────────────────────────────────────────────────────
@@ -107,7 +112,7 @@ void handleButtons() {
             resetFactoryFired = true;
             Logger.log(LOG_WARN, "SYS", "Reset button held 5s+ — factory reset");
             Lcd.showNotice(" Factory reset", " ...", 1500);
-            for (int f : {2000, 1500, 1000}) { tone(DEFAULT_BUZZ, f, 120); delay(160); }
+            for (int f : {2000, 1500, 1000}) { buzz(f, 120); delay(160); }
             WebServerManager.performReset(true);  // restarts device, does not return
         }
     } else if (!resetDown && resetHeld) {
@@ -132,7 +137,7 @@ void handleButtons() {
             forgetFired = true;
             Logger.log(LOG_WARN, "SYS", "Forget-network button held 3s+ — forgetting WiFi");
             Lcd.showNotice(" Forgetting", " WiFi...", 1500);
-            tone(DEFAULT_BUZZ, 1500, 150); delay(200);
+            buzz(1500, 150); delay(200);
             WebServerManager.performReset(false);  // restarts device, does not return
         }
     } else if (!forgetDown && forgetHeld) {

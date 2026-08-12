@@ -31,12 +31,14 @@
  *   dump logs
  *   factory reset confirm
  *   new factory password                 Rotate factory password (active on next factory reset)
+ *   mute / unmute                        Silence or re-enable the buzzer (RAM only, resets on reboot)
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <vector>
 #include "config.h"
+extern bool _buzzerMuted;
 #include "sd_manager.h"
 #include "logger.h"
 #include "web_server.h"
@@ -75,6 +77,8 @@ private:
         Serial.println("  dump logs                 Print device log to serial");
         Serial.println("  factory reset confirm     Full wipe + forget WiFi + restart");
         Serial.println("  new factory password      Generate new factory password (active on next reset)");
+        Serial.println("  mute                      Silence the buzzer");
+        Serial.println("  unmute                    Re-enable the buzzer");
         hr();
         Serial.println();
     }
@@ -347,6 +351,14 @@ private:
 
         } else if (lo == "new factory password") {
             AuthManager.generateNewFactoryPassword();
+
+        } else if (lo == "mute") {
+            _buzzerMuted = true;
+            Serial.println("[CMD] Buzzer muted");
+
+        } else if (lo == "unmute") {
+            _buzzerMuted = false;
+            Serial.println("[CMD] Buzzer unmuted");
 
         } else if (lo.length() > 0) {
             Serial.printf("[CMD] Unknown command: \"%s\"  (type 'help' for list)\n", cmd.c_str());
