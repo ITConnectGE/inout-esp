@@ -727,6 +727,7 @@ public:
             AuthManager.begin();
             Serial.println("[Reset] Default admin restored");
         }
+        Config.clearWifiCreds();
         WiFiManager wm; wm.resetSettings();
         delay(500); // let WiFi NVS erase commit to flash before hard reset
         ESP.restart();

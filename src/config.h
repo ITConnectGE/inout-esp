@@ -64,6 +64,30 @@ struct ConfigData {
     int    configVersion;
     String directionMode = "in"; // "in", "out", or "toggle" — refreshed from server on sync
 
+    // ── WiFi credentials (namespace "wf", separate from WiFiManager) ──────────
+    String wifiSsid;
+    String wifiPass;
+
+    void loadWifiCreds() {
+        Preferences p; p.begin("wf", true);
+        wifiSsid = p.getString("ssid", "");
+        wifiPass = p.getString("pass", "");
+        p.end();
+    }
+
+    void saveWifiCreds(const String& ssid, const String& pass) {
+        wifiSsid = ssid; wifiPass = pass;
+        Preferences p; p.begin("wf", false);
+        p.putString("ssid", ssid);
+        p.putString("pass", pass);
+        p.end();
+    }
+
+    void clearWifiCreds() {
+        wifiSsid = ""; wifiPass = "";
+        Preferences p; p.begin("wf", false); p.clear(); p.end();
+    }
+
     void load() {
         Preferences p; p.begin("cp", true);
         serverUrl     = p.getString("server",    DEFAULT_SERVER);

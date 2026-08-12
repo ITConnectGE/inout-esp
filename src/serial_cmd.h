@@ -16,6 +16,7 @@
  *   set server <url>
  *   set token <token>
  *   set tz <IANA name>
+ *   set wifi <ssid> <password>           Save WiFi credentials and restart
  *   forget wifi
  *   clear events
  *   clear photos
@@ -64,6 +65,7 @@ private:
         Serial.println("  open                      Trigger relay (hardware test)");
         Serial.println("  sync                      Force whitelist+events+employees sync now");
         Serial.println("  set <server|token|tz> <value>     Set backend URL, device token, or IANA timezone");
+        Serial.println("  set wifi <ssid> <password>        Save WiFi credentials and restart");
         Serial.println("  forget wifi               Erase WiFi credentials + restart");
         Serial.println("  clear <events|photos|logs|all>    Clear SD data  (all = events+photos+logs)");
         Serial.println("  list <employees|cards|admins>     List employees, cards, or admin accounts");
@@ -127,6 +129,22 @@ private:
 
     // Both commands delegate to WebServerManager.performReset() — the same
     // routine POST /api/reset uses — so serial and web resets can't drift.
+    void doSetWifi(const String& args) {
+        int sp = args.indexOf(' ');
+        if (sp < 1) {
+            Serial.println("[CMD] Usage: set wifi <ssid> <password>");
+            return;
+        }
+        String ssid = args.substring(0, sp);
+        String pass = args.substring(sp + 1);
+        pass.trim();
+        if (ssid.length() == 0) { Serial.println("[CMD] SSID cannot be empty"); return; }
+        Config.saveWifiCreds(ssid, pass);
+        Serial.printf("[CMD] WiFi credentials saved (SSID: %s) — restarting\n", ssid.c_str());
+        delay(300);
+        ESP.restart();
+    }
+
     void doForgetWifi() {
         Serial.println("[CMD] Erasing WiFi credentials...");
         WebServerManager.performReset(false);
@@ -262,6 +280,9 @@ private:
             tzset();
             Serial.printf("[CMD] Timezone set to: %s (%s)\n",
                           Config.timezone.c_str(), Config.getPosixTz().c_str());
+
+        } else if (lo.startsWith("set wifi ")) {
+            doSetWifi(cmd.substring(9));  // cmd preserves SSID/password case
 
         } else if (lo == "forget wifi") {
             doForgetWifi();

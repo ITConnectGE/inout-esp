@@ -225,6 +225,21 @@ void setup() {
 
     // ── 7. WiFi ───────────────────────────────────────────────────────────────
     Lcd.showBoot("WiFi setup...");
+
+    // Try credentials saved via `set wifi` before handing off to WiFiManager.
+    // If already connected, autoConnect() returns immediately without a portal.
+    Config.loadWifiCreds();
+    if (Config.wifiSsid.length() > 0) {
+        Serial.printf("[WIFI] Trying stored credentials (SSID: %s)...\n", Config.wifiSsid.c_str());
+        Lcd.showBoot("Connecting...");
+        WiFi.begin(Config.wifiSsid.c_str(), Config.wifiPass.c_str());
+        for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) delay(500);
+        if (WiFi.status() == WL_CONNECTED)
+            Serial.println("[WIFI] Connected via stored credentials");
+        else
+            Serial.println("[WIFI] Stored credentials failed — falling back to portal");
+    }
+
     WiFiManager wm;
     wm.setConfigPortalTimeout(180);
     wm.setConnectTimeout(30);
