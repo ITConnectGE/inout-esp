@@ -98,7 +98,7 @@ public:
         GeorgianLcd.begin(_lcd);         // no icons — all 8 CGRAM slots free for Georgian glyphs
         _found = true;
         // Show clean boot message
-        printLine(0, "  InOut v0.4.3");
+        printLine(0, "  InOut v" FIRMWARE_VERSION);
         printLine(1, "  Starting...   ");
         _lastClockMs = millis();
     }
@@ -184,7 +184,7 @@ public:
 
     void showBoot(const String& msg) {
         if (!_found) return;
-        printLine(0, "  InOut v0.4.3");
+        printLine(0, "  InOut v" FIRMWARE_VERSION);
         printLine(1, msg.substring(0, LCD_COLS));
     }
 
@@ -206,6 +206,31 @@ public:
         delay(5);
         printLine(0, line0);
         printLine(1, line1);
+    }
+
+    // OTA display — called from syncTask while main loop is frozen; loop() is not
+    // running so these write directly without using the notice/tap state machine.
+    void showOta(const String& version) {
+        if (!_found) return;
+        _showingTap    = false;
+        _showingNotice = false;
+        _lcd->clear(); delay(5);
+        printLine(0, "Updating v" + version);
+        printLine(1, "Connecting...   ");
+    }
+
+    void showOtaProgress(int pct) {
+        if (!_found) return;
+        char line[17];
+        snprintf(line, sizeof(line), "  Progress: %3d%%", pct);
+        printLine(1, String(line));
+    }
+
+    void showOtaError() {
+        if (!_found) return;
+        _lcd->clear(); delay(5);
+        printLine(0, " Update failed!");
+        printLine(1, " Rebooting...  ");
     }
 
     // Call once at end of setup() — clears boot messages and shows idle immediately

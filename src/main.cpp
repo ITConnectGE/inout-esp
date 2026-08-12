@@ -13,6 +13,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <SPI.h>
@@ -38,8 +39,9 @@
 SPIClass spiVSPI(VSPI);
 SPIClass spiHSPI(HSPI);
 
-bool _lcdFound    = false;
-bool _buzzerMuted = false;
+bool          _lcdFound      = false;
+bool          _buzzerMuted   = false;
+volatile bool _otaInProgress = false;
 
 TaskHandle_t hSync = nullptr;
 
@@ -145,6 +147,45 @@ void handleButtons() {
     }
 }
 
+// ── OTA update ───────────────────────────────────────────────────────────────
+// Called from syncTask when sendHeartbeat() receives ota_url + ota_version.
+// Sets _otaInProgress so loop() freezes (no NFC reads, no relay, no web handler).
+// GitHub release URLs redirect; HTTPC_STRICT_FOLLOW_REDIRECTS handles that.
+// On success httpUpdate reboots into the new partition automatically.
+// On failure we reboot into the old partition (dual-OTA rollback is automatic).
+void performOta(const String& url, const String& version) {
+    if (version == FIRMWARE_VERSION) {
+        Logger.logf(LOG_INFO, "OTA", "Already on v%s — skipping", version.c_str());
+        return;
+    }
+    _otaInProgress = true;
+    Logger.logf(LOG_INFO, "OTA", "Starting update v%s", version.c_str());
+    Lcd.showOta(version);
+
+    WiFiClientSecure client;
+    ApiClient.configureClient(client);
+    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    httpUpdate.rebootOnUpdate(true);
+    httpUpdate.onProgress([](int cur, int total) {
+        if (total > 0) Lcd.showOtaProgress((cur * 100) / total);
+    });
+
+    t_httpUpdate_return ret = httpUpdate.update(client, url);
+
+    // HTTP_UPDATE_OK never reaches here — device reboots automatically.
+    if (ret == HTTP_UPDATE_FAILED) {
+        Logger.logf(LOG_ERROR, "OTA", "Failed (%d): %s",
+                    httpUpdate.getLastError(),
+                    httpUpdate.getLastErrorString().c_str());
+        Lcd.showOtaError();
+        delay(4000);
+        ESP.restart();  // boots old partition
+    }
+    // HTTP_UPDATE_NO_UPDATES: server said nothing to install — resume normal operation.
+    Logger.log(LOG_WARN, "OTA", "Server reported no update available");
+    _otaInProgress = false;
+}
+
 // ── Serial command task ───────────────────────────────────────────────────────
 // Runs on its own core so blocking operations in the main loop (HTTP calls,
 // feedback delays, NFC polling) don't starve serial input.
@@ -179,15 +220,30 @@ void syncTask(void*) {
         // whole backlog in a single sync pass instead of many 30s rounds.
         // Cap at 100 iterations (~1000 events) so a corrupt log can't stall
         // the task forever; markAllSynced() already drops bad-timestamp events.
-        for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
-            if (ApiClient.syncEvents() <= 0) break;
+        {
+            WiFiClientSecure drainWcs;
+            ApiClient.configureClient(drainWcs);
+            for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
+                if (ESP.getMaxAllocHeap() < 90000) {
+                    Logger.logf(LOG_WARN, "SYNC", "Low heap (%u B) — deferring remaining events", ESP.getMaxAllocHeap());
+                    break;
+                }
+                if (ApiClient.syncEvents(&drainWcs) <= 0) break;
+            }
         }
         ApiClient.syncEmployees();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
         Logger.trimLog();
-        ApiClient.sendHeartbeat();
+        if (ESP.getMaxAllocHeap() >= 65000) ApiClient.sendHeartbeat();
+        if (ApiClient.pendingOtaUrl.length() > 0) {
+            String url = ApiClient.pendingOtaUrl;
+            String ver = ApiClient.pendingOtaVersion;
+            ApiClient.pendingOtaUrl     = "";
+            ApiClient.pendingOtaVersion = "";
+            performOta(url, ver);
+        }
         Lcd.setFallback(WiFi.localIP().toString());
     }
 }
@@ -195,7 +251,7 @@ void syncTask(void*) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200); delay(300);
-    Serial.println("\n[INFO][SYS] InOut v0.4.3 booting");
+    Serial.println("\n[INFO][SYS] InOut v" FIRMWARE_VERSION " booting");
 
     Logger.begin();
 
@@ -218,7 +274,7 @@ void setup() {
     bool sdOk = SdManager.begin();
     if (sdOk) {
         Logger.setSDReady(true);
-        Logger.log(LOG_INFO, "SYS", "InOut v0.4.3 boot — SD ready");
+        Logger.log(LOG_INFO, "SYS", "InOut v" FIRMWARE_VERSION " boot — SD ready");
     }
 
     // ── 3. Auth (requires SD) ─────────────────────────────────────────────────
@@ -231,6 +287,8 @@ void setup() {
     // ── 4. LCD on I2C ─────────────────────────────────────────────────────────
     Lcd.begin();
     _lcdFound = Lcd.isFound();
+    Lcd.showBoot("OTA v" FIRMWARE_VERSION "!");
+    delay(2000);
     Lcd.showBoot("Booting...");
 
     // SPIFFS not used — all web content served from SD card
@@ -319,6 +377,7 @@ void setup() {
 
 // ── Loop ─────────────────────────────────────────────────────────────────────
 void loop() {
+    if (_otaInProgress) { delay(50); return; }
     WebServerManager.loop();
     Relay.loop();
     Lcd.loop();

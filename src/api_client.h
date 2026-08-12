@@ -122,6 +122,15 @@ private:
     }
 
 public:
+    // Allow callers to configure a WiFiClientSecure for shared use across
+    // multiple requests (e.g. the drain loop) to reduce heap fragmentation.
+    void configureClient(WiFiClientSecure& c) { setupSecureClient(c); }
+
+    // Set by sendHeartbeat() when the server includes OTA fields in its response.
+    // Consumed and cleared by syncTask in main.cpp.
+    String pendingOtaUrl;
+    String pendingOtaVersion;
+
     // Persist UTC epoch to SD so reboots start with an approximate clock.
     void saveTimeToSD() {
         if (!SdManager.isMounted()) return;
@@ -242,7 +251,7 @@ public:
         return -1;
     }
 
-    int syncEvents() {
+    int syncEvents(WiFiClientSecure* sharedWcs = nullptr) {
         if (!serverReachable()) return -1;
         int n = SdManager.unsyncedCount();
         if (n == 0) return 0;
@@ -336,7 +345,9 @@ public:
             return -1;
         }
         size_t bodyLen = bodyFile.size();
-        WiFiClientSecure wcs; setupSecureClient(wcs);
+        WiFiClientSecure _local;
+        WiFiClientSecure& wcs = sharedWcs ? *sharedWcs : _local;
+        if (!sharedWcs) setupSecureClient(wcs);
         HTTPClient http;
         http.begin(wcs, Config.serverUrl + "/device/events/batch");
         http.setTimeout(30000);
@@ -419,7 +430,7 @@ public:
         http.begin(wcs, Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
-        doc["firmware"]        = "0.4.3";
+        doc["firmware"]        = FIRMWARE_VERSION;
         doc["ip"]              = WiFi.localIP().toString();
         doc["rssi"]            = WiFi.RSSI();
         doc["config_version"]  = Config.configVersion;
@@ -431,8 +442,15 @@ public:
         bool resync = false;
         if (code == 200) {
             JsonDocument res;
-            if (!deserializeJson(res, http.getString()))
+            if (!deserializeJson(res, http.getString())) {
                 resync = res["resync"] | false;
+                const char* otaUrl = res["ota_url"];
+                const char* otaVer = res["ota_version"];
+                if (otaUrl && *otaUrl && otaVer && *otaVer) {
+                    pendingOtaUrl     = otaUrl;
+                    pendingOtaVersion = otaVer;
+                }
+            }
         } else if (code > 0) {
             Logger.log(LOG_WARN, "API", "Heartbeat failed",
                        serverErrMsg(code, http.getString()));
