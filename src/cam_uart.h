@@ -178,29 +178,26 @@ public:
 
         Serial2.print("CAPTURE "); Serial2.println(uid);
 
-        String header = readLine(3000);
-        uint32_t len, expectedSum;
-        if (!parseHeader(header, len, expectedSum)) {
-            Serial.println("[CAM] Capture failed: " + header);
-            drainStale();
-            return false;
-        }
-
         String path;
         File f = SdManager.openPhotoFile(uid, happenedAt, path);
         if (!f) { drainStale(); return false; }
 
+        uint32_t len = 0, expectedSum = 0;
         for (int attempt = 1; attempt <= CAM_MAX_ATTEMPTS; attempt++) {
             if (attempt > 1) {
-                // Ask the CAM to resend the SAME cached frame — no
-                // re-capture, so the retried photo still matches this tap.
+                // Camera still holds _pendingFb — RETRY resends the same frame
+                // without re-capturing, so the photo still matches this tap.
+                drainStale();
                 Serial2.println("RETRY");
-                String retryHeader = readLine(3000);
-                if (!parseHeader(retryHeader, len, expectedSum)) {
-                    Serial.println("[CAM] Retry header failed: " + retryHeader);
-                    drainStale();
-                    continue;
-                }
+            }
+
+            String header = readLine(3000);
+            if (!parseHeader(header, len, expectedSum)) {
+                // Header corrupted in transit — JPEG bytes likely followed;
+                // drainStale() clears them so RETRY gets a clean line.
+                Serial.printf("[CAM] Header corrupt (attempt %d): %s\n", attempt, header.c_str());
+                drainStale();
+                continue;
             }
 
             f.seek(0);
