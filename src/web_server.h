@@ -51,7 +51,7 @@
 #include "api_client.h"
 #include "auth_manager.h"
 #include "logger.h"
-#include "page_html.h"
+
 
 WebServer _server(80);
 extern bool _lcdFound;
@@ -634,10 +634,7 @@ private:
                           SdManager.isMounted(),
                           SdManager.isMounted() ? SD.exists("/www/index.html") : 0);
         }
-        // PROGMEM fallback — basic setup page when SD not available
-        Serial.println("[Web] Serving / from PROGMEM (SD not mounted or file missing)");
-        _server.sendHeader("Connection", "close");
-        _server.send_P(200, "text/html", PAGE_HTML);
+        _server.send(503, "text/plain", "SD card not mounted — place index.html at /www/index.html");
     }
 
     // ── GET /api/local/employees ──────────────────────────────────────────────
