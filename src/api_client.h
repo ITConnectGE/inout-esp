@@ -25,6 +25,7 @@ private:
     SemaphoreHandle_t _mutex = nullptr;
     String _caCert;
     WiFiClientSecure _wcs;
+    JsonDocument _doc;
 
     void loadCaCert() {
         if (!SdManager.isMounted() || !SD.exists("/data/ca.pem")) {
@@ -231,11 +232,11 @@ public:
 
     int syncEmployees() {
         if (!serverReachable()) return -1;
-        JsonDocument doc;
-        JsonArray arr = doc["employees"].to<JsonArray>();
+        _doc.clear();
+        JsonArray arr = _doc["employees"].to<JsonArray>();
         if (!SdManager.getUnsyncedEmployees(arr)) return 0;
         int count = (int)arr.size();
-        String body; serializeJson(doc, body);
+        String body; serializeJson(_doc, body);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_ERROR, "SYNC", "Employees sync: mutex timeout");
             return -1;
@@ -247,9 +248,9 @@ public:
         String respBody = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
         if (code == 200 || code == 201) {
-            JsonDocument resp;
-            if (!deserializeJson(resp, respBody)) {
-                JsonArray ids = resp["ids"].as<JsonArray>();
+            _doc.clear();
+            if (!deserializeJson(_doc, respBody)) {
+                JsonArray ids = _doc["ids"].as<JsonArray>();
                 SdManager.markEmployeesSynced(ids);
             }
             Logger.logf(LOG_INFO, "SYNC", "Employees synced: %d record(s)", count);
@@ -265,10 +266,9 @@ public:
         int n = SdManager.unsyncedCount();
         if (n == 0) return 0;
 
-        // Collect up to 10 events — smaller batch leaves heap headroom for photos.
-        JsonDocument evDoc;
-        JsonArray arr = evDoc["events"].to<JsonArray>();
-        if (!SdManager.getUnsyncedEvents(arr, 10)) {
+        _doc.clear();
+        JsonArray arr = _doc["events"].to<JsonArray>();
+        if (!SdManager.getUnsyncedEvents(arr, 25)) {
             Logger.logf(LOG_WARN, "SYNC", "Dropping %d unsendable events (bad timestamps)", n);
             SdManager.markAllSynced();
             return 0;
@@ -278,7 +278,7 @@ public:
 
         // ── Find photos for these events ───────────────────────────────────────
         struct PInfo { String path; size_t size; bool ok = false; };
-        PInfo photos[10];
+        PInfo photos[25];
         for (int i = 0; i < batchSize; i++) {
             photos[i].path = SdManager.getPhotoForEvent(
                 String(arr[i]["uid"] | ""), String(arr[i]["happened_at"] | ""));
@@ -410,11 +410,11 @@ public:
             syncTimeFromHttpDate(http.header("Date"));
         String payload = http.getString(); http.end();
         xSemaphoreGiveRecursive(_mutex);
-        JsonDocument doc;
-        if (!deserializeJson(doc, payload)) {
-            if (!doc["relay_ms"].isNull())       Config.relayMs       = doc["relay_ms"];
-            if (!doc["config_version"].isNull()) Config.configVersion = doc["config_version"];
-            if (!doc["direction_mode"].isNull()) Config.directionMode = doc["direction_mode"].as<String>();
+        _doc.clear();
+        if (!deserializeJson(_doc, payload)) {
+            if (!_doc["relay_ms"].isNull())       Config.relayMs       = _doc["relay_ms"];
+            if (!_doc["config_version"].isNull()) Config.configVersion = _doc["config_version"];
+            if (!_doc["direction_mode"].isNull()) Config.directionMode = _doc["direction_mode"].as<String>();
             Config.save();
         }
         bool ok = SdManager.updateWhitelist(payload);
@@ -433,31 +433,31 @@ public:
         HTTPClient http;
         http.begin(_wcs, Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
-        JsonDocument doc;
-        doc["firmware"]        = FIRMWARE_VERSION;
+        _doc.clear();
+        _doc["firmware"]        = FIRMWARE_VERSION;
         if (camFirmwareVersion.length() > 0)
-            doc["cam_firmware"] = camFirmwareVersion;
-        doc["ip"]              = WiFi.localIP().toString();
-        doc["rssi"]            = WiFi.RSSI();
-        doc["config_version"]  = Config.configVersion;
-        doc["unsynced_events"] = SdManager.unsyncedCount();
-        doc["sd_mounted"]      = SdManager.isMounted();
-        doc["uptime_s"]        = millis()/1000;
-        String body; serializeJson(doc, body);
+            _doc["cam_firmware"] = camFirmwareVersion;
+        _doc["ip"]              = WiFi.localIP().toString();
+        _doc["rssi"]            = WiFi.RSSI();
+        _doc["config_version"]  = Config.configVersion;
+        _doc["unsynced_events"] = SdManager.unsyncedCount();
+        _doc["sd_mounted"]      = SdManager.isMounted();
+        _doc["uptime_s"]        = millis()/1000;
+        String body; serializeJson(_doc, body);
         int code = http.POST(body);
         bool resync = false;
         if (code == 200) {
-            JsonDocument res;
-            if (!deserializeJson(res, http.getString())) {
-                resync = res["resync"] | false;
-                const char* otaUrl = res["ota_url"];
-                const char* otaVer = res["ota_version"];
+            _doc.clear();
+            if (!deserializeJson(_doc, http.getString())) {
+                resync = _doc["resync"] | false;
+                const char* otaUrl = _doc["ota_url"];
+                const char* otaVer = _doc["ota_version"];
                 if (otaUrl && *otaUrl && otaVer && *otaVer) {
                     pendingOtaUrl     = otaUrl;
                     pendingOtaVersion = otaVer;
                 }
-                const char* camUrl = res["cam_ota_url"];
-                const char* camVer = res["cam_ota_version"];
+                const char* camUrl = _doc["cam_ota_url"];
+                const char* camVer = _doc["cam_ota_version"];
                 if (camUrl && *camUrl && camVer && *camVer) {
                     pendingCamOtaUrl     = camUrl;
                     pendingCamOtaVersion = camVer;
