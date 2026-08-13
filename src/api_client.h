@@ -24,6 +24,7 @@ private:
     bool _ntpSynced = false;
     SemaphoreHandle_t _mutex = nullptr;
     String _caCert;
+    WiFiClientSecure _wcs;
 
     void loadCaCert() {
         if (!SdManager.isMounted() || !SD.exists("/data/ca.pem")) {
@@ -173,6 +174,7 @@ public:
         tzset();
         Logger.log(LOG_INFO, "API", "NTP requested: pool.ntp.org time.nist.gov");
         loadCaCert();
+        setupSecureClient(_wcs);
     }
 
     bool isNtpSynced() {
@@ -238,9 +240,8 @@ public:
             Logger.log(LOG_ERROR, "SYNC", "Employees sync: mutex timeout");
             return -1;
         }
-        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(wcs, Config.serverUrl + "/device/employees/batch");
+        http.begin(_wcs, Config.serverUrl + "/device/employees/batch");
         http.setTimeout(8000); auth(http);
         int code = http.POST(body);
         String respBody = http.getString(); http.end();
@@ -259,7 +260,7 @@ public:
         return -1;
     }
 
-    int syncEvents(WiFiClientSecure* sharedWcs = nullptr) {
+    int syncEvents() {
         if (!serverReachable()) return -1;
         int n = SdManager.unsyncedCount();
         if (n == 0) return 0;
@@ -353,11 +354,8 @@ public:
             return -1;
         }
         size_t bodyLen = bodyFile.size();
-        WiFiClientSecure _local;
-        WiFiClientSecure& wcs = sharedWcs ? *sharedWcs : _local;
-        if (!sharedWcs) setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(wcs, Config.serverUrl + "/device/events/batch");
+        http.begin(_wcs, Config.serverUrl + "/device/events/batch");
         http.setTimeout(30000);
         http.addHeader("Authorization", "Bearer " + Config.deviceToken);
         http.addHeader("Accept",        "application/json");
@@ -394,9 +392,8 @@ public:
             Logger.log(LOG_ERROR, "SYNC", "Whitelist sync: mutex timeout");
             return false;
         }
-        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(wcs, Config.serverUrl + "/device/sync");
+        http.begin(_wcs, Config.serverUrl + "/device/sync");
         http.setTimeout(8000); auth(http);
         const char* dateHdr[] = {"Date"};
         http.collectHeaders(dateHdr, 1);
@@ -433,9 +430,8 @@ public:
             Logger.log(LOG_WARN, "API", "Heartbeat: mutex timeout");
             return;
         }
-        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(wcs, Config.serverUrl + "/device/heartbeat");
+        http.begin(_wcs, Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
         JsonDocument doc;
         doc["firmware"]        = FIRMWARE_VERSION;
@@ -489,9 +485,8 @@ public:
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             out = "{\"error\":\"busy\"}"; return 503;
         }
-        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(wcs, Config.serverUrl + path);
+        http.begin(_wcs, Config.serverUrl + path);
         http.setTimeout(10000); auth(http);
         int code;
         if      (method=="GET")    code = http.GET();

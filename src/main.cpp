@@ -259,16 +259,12 @@ void syncTask(void*) {
         // whole backlog in a single sync pass instead of many 30s rounds.
         // Cap at 100 iterations (~1000 events) so a corrupt log can't stall
         // the task forever; markAllSynced() already drops bad-timestamp events.
-        {
-            WiFiClientSecure drainWcs;
-            ApiClient.configureClient(drainWcs);
-            for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
-                if (ESP.getMaxAllocHeap() < 90000) {
-                    Logger.logf(LOG_WARN, "SYNC", "Low heap (%u B) — deferring remaining events", ESP.getMaxAllocHeap());
-                    break;
-                }
-                if (ApiClient.syncEvents(&drainWcs) <= 0) break;
+        for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
+            if (ESP.getMaxAllocHeap() < 90000) {
+                Logger.logf(LOG_WARN, "SYNC", "Low heap (%u B) — deferring remaining events", ESP.getMaxAllocHeap());
+                break;
             }
+            if (ApiClient.syncEvents() <= 0) break;
         }
         ApiClient.syncEmployees();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
