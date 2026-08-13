@@ -251,20 +251,41 @@ void syncTask(void*) {
         Logger.log(LOG_WARN, "SYNC", "Server unreachable — working locally");
         Lcd.showNotice(" Server offline", " Working locally", 5000);
     }
+    // Adaptive heap guard: starts at 55 KB, lowers by 2 KB every 5 consecutive
+    // cycles where the observed floor stays >10 KB above the guard, down to
+    // 45 KB minimum. Resets the counter any time the floor gets close.
+    static uint32_t heapGuard   = 55000;
+    static uint32_t heapFloor   = UINT32_MAX;
+    static int      stableCount = 0;
+
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
-        // Drain all pending events in batches of 10 (each with its photo if
-        // one exists). Loop until the queue is empty rather than sending just
-        // one batch per cycle — after a long offline period this clears the
-        // whole backlog in a single sync pass instead of many 30s rounds.
-        // Cap at 100 iterations (~1000 events) so a corrupt log can't stall
-        // the task forever; markAllSynced() already drops bad-timestamp events.
+
+        uint32_t maxAlloc = ESP.getMaxAllocHeap();
+        heapFloor = min(heapFloor, maxAlloc);
+
+        // Drain all pending events in batches (each with its photo if one
+        // exists). Loop until the queue is empty — clears a backlog in one
+        // pass instead of many 30s rounds. Cap at 100 to guard against a
+        // corrupt log; markAllSynced() drops bad-timestamp events.
         for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
-            if (ESP.getMaxAllocHeap() < 55000) {
+            if (ESP.getMaxAllocHeap() < heapGuard) {
                 Logger.logf(LOG_WARN, "SYNC", "Low heap (%u B) — deferring remaining events", ESP.getMaxAllocHeap());
                 break;
             }
             if (ApiClient.syncEvents() <= 0) break;
+        }
+
+        // Adapt guard: lower by 2 KB after 5 stable cycles, reset on instability.
+        if (heapFloor > heapGuard + 10000 && heapGuard > 45000) {
+            if (++stableCount >= 5) {
+                heapGuard   = max(45000u, heapGuard - 2000u);
+                heapFloor   = UINT32_MAX;
+                stableCount = 0;
+                Logger.logf(LOG_INFO, "HEAP", "Guard → %u B", heapGuard);
+            }
+        } else {
+            stableCount = 0;
         }
         ApiClient.syncEmployees();
         long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
