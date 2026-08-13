@@ -276,8 +276,15 @@ void syncTask(void*) {
             if (ApiClient.syncEvents() <= 0) break;
         }
 
-        // Adapt guard: lower by 2 KB after 5 stable cycles, reset on instability.
-        if (heapFloor > heapGuard + 10000 && heapGuard > 45000) {
+        // Once the queue is fully drained, reset the guard back to 55 KB so
+        // the next backlog starts fresh and adapts again from a safe baseline.
+        if (SdManager.unsyncedCount() == 0 && heapGuard < 55000) {
+            heapGuard   = 55000;
+            heapFloor   = UINT32_MAX;
+            stableCount = 0;
+            Logger.logf(LOG_INFO, "HEAP", "Queue clear — guard reset to %u B", heapGuard);
+        } else if (heapFloor > heapGuard + 10000 && heapGuard > 45000) {
+            // Lower by 2 KB after 5 consecutive stable cycles.
             if (++stableCount >= 5) {
                 heapGuard   = max(45000u, heapGuard - 2000u);
                 heapFloor   = UINT32_MAX;
