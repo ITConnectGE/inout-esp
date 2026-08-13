@@ -482,20 +482,20 @@ public:
         if (!serverReachable()) {
             out = "{\"error\":\"device_offline\",\"offline\":true}"; return 503;
         }
-        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
-            out = "{\"error\":\"busy\"}"; return 503;
-        }
+        // Uses its own client rather than _wcs so web UI proxy calls don't
+        // compete with syncTask for the shared SSL context or the mutex.
+        // lwip handles concurrent TCP connections natively.
+        WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
-        http.begin(_wcs, Config.serverUrl + path);
+        http.begin(wcs, Config.serverUrl + path);
         http.setTimeout(10000); auth(http);
         int code;
         if      (method=="GET")    code = http.GET();
         else if (method=="POST")   code = http.POST(body);
         else if (method=="PUT")    code = http.PUT(body);
         else if (method=="DELETE") code = http.sendRequest("DELETE");
-        else                       { xSemaphoreGiveRecursive(_mutex); out="{}"; return 405; }
+        else                       { out="{}"; return 405; }
         out = http.getString(); http.end();
-        xSemaphoreGiveRecursive(_mutex);
         return code;
     }
 } ApiClient;
