@@ -268,7 +268,7 @@ public:
 
         _doc.clear();
         JsonArray arr = _doc["events"].to<JsonArray>();
-        if (!SdManager.getUnsyncedEvents(arr, 25)) {
+        if (!SdManager.getUnsyncedEvents(arr, 15)) {
             Logger.logf(LOG_WARN, "SYNC", "Dropping %d unsendable events (bad timestamps)", n);
             SdManager.markAllSynced();
             return 0;
@@ -278,7 +278,7 @@ public:
 
         // ── Find photos for these events ───────────────────────────────────────
         struct PInfo { String path; size_t size; bool ok = false; };
-        PInfo photos[25];
+        PInfo photos[15];
         for (int i = 0; i < batchSize; i++) {
             photos[i].path = SdManager.getPhotoForEvent(
                 String(arr[i]["uid"] | ""), String(arr[i]["happened_at"] | ""));

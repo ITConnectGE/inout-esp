@@ -27,7 +27,7 @@
 #define CAM_TX_PIN      32
 #define CAM_RX_PIN      34
 #define CAM_BAUD        921600
-#define CAM_RX_BUF      16384   // must be set before Serial2.begin()
+#define CAM_RX_BUF      10240   // must be set before Serial2.begin()
 #define CAM_RECV_MS     6000    // max time to receive full JPEG
 #define CAM_CHUNK_SIZE  4096    // stream-to-SD chunk size — keeps peak RAM tiny
 #define CAM_MAX_ATTEMPTS 3      // total tries (1 initial + up to 2 retries) before giving up
