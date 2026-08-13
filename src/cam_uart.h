@@ -180,10 +180,26 @@ public:
 
         String path;
         File f = SdManager.openPhotoFile(uid, happenedAt, path);
-        if (!f) { drainStale(); return false; }
+        int firstAttempt = 1;
+        if (!f) {
+            // SD had a transient error — drain the incoming JPEG bytes so the
+            // line goes quiet, wait for the card to recover, then use RETRY to
+            // re-request the same buffered frame from the camera.
+            drainStale(150, 5000);
+            for (int sdTry = 0; sdTry < 3 && !f; sdTry++) {
+                delay(400);
+                f = SdManager.openPhotoFile(uid, happenedAt, path);
+            }
+            if (!f) {
+                Serial.println("[CAM] SD failed to recover — photo lost");
+                return false;
+            }
+            Serial.println("[CAM] SD recovered — retrying capture via RETRY");
+            firstAttempt = 2;  // skip straight to RETRY on first loop iteration
+        }
 
         uint32_t len = 0, expectedSum = 0;
-        for (int attempt = 1; attempt <= CAM_MAX_ATTEMPTS; attempt++) {
+        for (int attempt = firstAttempt; attempt <= CAM_MAX_ATTEMPTS; attempt++) {
             if (attempt > 1) {
                 // Camera still holds _pendingFb — RETRY resends the same frame
                 // without re-capturing, so the photo still matches this tap.
