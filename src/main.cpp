@@ -260,7 +260,7 @@ void syncTask(void*) {
         // Cap at 100 iterations (~1000 events) so a corrupt log can't stall
         // the task forever; markAllSynced() already drops bad-timestamp events.
         for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
-            if (ESP.getMaxAllocHeap() < 90000) {
+            if (ESP.getMaxAllocHeap() < 55000) {
                 Logger.logf(LOG_WARN, "SYNC", "Low heap (%u B) — deferring remaining events", ESP.getMaxAllocHeap());
                 break;
             }
