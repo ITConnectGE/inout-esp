@@ -812,5 +812,18 @@ public:
         Logger.log(LOG_INFO, "WEB", "Server started", "http://" + WiFi.localIP().toString());
     }
 
-    void loop() { _server.handleClient(); }
+    void loop() {
+        // A stuck client (connected but not reading) fills the TCP send buffer
+        // and causes repeated EAGAIN write errors while holding heap. If the
+        // largest contiguous free block drops below 50 KB, force-close all
+        // connections by restarting the server — clients reconnect automatically.
+        if (ESP.getMaxAllocHeap() < 50000) {
+            Logger.log(LOG_WARN, "WEB", "Low heap — closing stuck connections");
+            _server.stop();
+            delay(200);
+            _server.begin();
+            return;
+        }
+        _server.handleClient();
+    }
 } WebServerManager;
