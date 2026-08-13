@@ -174,7 +174,7 @@ public:
             return false;
         }
 
-        while (Serial2.available()) Serial2.read();
+        drainStale();
 
         Serial2.print("CAPTURE "); Serial2.println(uid);
 
@@ -224,6 +224,7 @@ public:
             if (writeOk && got == len && sum == expectedSum) {
                 f.close();
                 Serial2.println("ACK");
+                drainStale(50, 500);
                 Logger.logf(LOG_INFO, "SD", "Photo saved: %s  (%u bytes, attempt %d)",
                             path.c_str(), got, attempt);
                 return true;
