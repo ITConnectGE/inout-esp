@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>InOut — Employees</title>
+<link rel="stylesheet" href="/common.css">
+</head>
+<body>
+<div id="app" class="show">
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="logo"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4z"/></svg></div><div><div class="logo-name">InOut</div><div class="logo-sub" id="sb-id">—</div></div></div>
+  <nav id="main-nav"></nav>
+  <div class="user-chip"><div class="user-av" id="user-av">A</div><div class="user-info"><div class="user-name" id="user-name">—</div><div class="user-role" id="user-role">—</div></div></div>
+  <div class="sync-bar"><div class="sdot off" id="sdot"></div><span id="sync-txt">Connecting…</span></div>
+  <div class="sidebar-footer">
+    <button class="ni" onclick="openChangePassword()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Change password</button>
+    <button class="ni" onclick="doLogout()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button>
+  </div>
+</aside>
+<div class="main-area">
+  <div class="topbar">
+    <button class="menu-btn" onclick="openSidebar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+    <span class="page-title" id="page-title">Employees</span>
+    <div class="tb-right">
+      <span class="server-chip" id="chip">● Offline</span>
+      <button class="btn btn-sm" onclick="forceSync()">Sync</button>
+    </div>
+  </div>
+  <div class="offline-bar" id="offline-bar"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Server unreachable — showing local data.</div>
+  <div class="content">
+    <!-- Employees tab -->
+    <div id="tab-employees">
+      <div class="card">
+        <div class="card-hd"><h2>Employees</h2>
+          <div style="display:flex;gap:6px">
+            <button class="tab-btn active" onclick="showTab('employees')">Employees</button>
+            <button class="tab-btn" onclick="showTab('cards')">Cards</button>
+            <button class="btn btn-sm btn-primary" onclick="openAddEmployee()">+ Add</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <input type="text" id="emp-q" placeholder="Name, department…" oninput="renderEmployees()">
+          <select id="emp-st" onchange="renderEmployees()"><option value="">All</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+        </div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Name</th><th class="hide-xs">Dept / Position</th><th>Cards</th><th>Status</th><th>Sync</th><th></th></tr></thead>
+          <tbody id="emp-body"></tbody>
+        </table></div>
+      </div>
+    </div>
+    <!-- Cards tab -->
+    <div id="tab-cards" style="display:none">
+      <div class="card">
+        <div class="card-hd"><h2>Cards</h2>
+          <div style="display:flex;gap:6px">
+            <button class="tab-btn" onclick="showTab('employees')">Employees</button>
+            <button class="tab-btn active" onclick="showTab('cards')">Cards</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <input type="text" id="card-q" placeholder="UID or employee…" oninput="renderCards()">
+          <select id="card-st" onchange="renderCards()"><option value="">All</option><option value="active">Active</option><option value="lost">Lost</option><option value="disabled">Disabled</option></select>
+        </div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>UID</th><th>Label</th><th>Employee</th><th class="hide-xs">Type</th><th>Status</th></tr></thead>
+          <tbody id="card-body"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<!-- Add Employee Modal -->
+<div class="modal-bg" id="modal-emp">
+  <div class="modal">
+    <h3>Add employee</h3>
+    <div class="modal-err" id="emp-err"></div>
+    <div id="emp-step1">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:14px;line-height:1.5">Step 1 of 2 — Scan the employee's NFC card on the IN reader.</div>
+      <div id="tap-widget-area">
+        <div class="tap-widget"><div class="tap-icon">&#x1F4B3;</div><div class="tap-msg">Tap card on IN reader</div><div class="tap-sub">Waiting for scan…</div><div class="tap-timer" id="tap-countdown">—</div></div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label>Card UID <span style="font-weight:400;color:var(--hint)">auto-filled on scan, or type manually</span></label>
+        <input type="text" id="ef-uid" style="font-family:ui-monospace,monospace;font-size:12px;text-transform:uppercase" oninput="onUidManualInput()">
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Card label</label><input type="text" id="ef-label"></div>
+        <div class="field"><label>Card type</label>
+          <select id="ef-type"><option value="mifare_uid">MIFARE UID</option><option value="mifare_desfire">MIFARE DESFire</option></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="closeModal('modal-emp')">Cancel</button>
+        <button class="btn btn-primary" id="btn-step1-next" onclick="goToStep2()" disabled>Next →</button>
+      </div>
+    </div>
+    <div id="emp-step2" style="display:none">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Step 2 of 2 — Employee details</div>
+      <div style="background:var(--s2);border-radius:var(--rsm);padding:8px 12px;margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:8px">
+        <span>&#x1F4B3;</span><span style="font-family:ui-monospace,monospace;font-size:11px" id="step2-uid-display"></span>
+        <button class="btn btn-sm" style="margin-left:auto;padding:3px 8px;font-size:11px" onclick="goBackToStep1()">Change</button>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>First name *</label><input type="text" id="ef-first" oninput="validateName(this)"></div>
+        <div class="field"><label>Last name *</label><input type="text" id="ef-last" oninput="validateName(this)"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Department</label><input type="text" id="ef-dept"></div>
+        <div class="field"><label>Position</label><input type="text" id="ef-pos"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Phone</label><input type="tel" id="ef-phone" oninput="validatePhone(this)"><span class="field-err" id="ef-phone-err"></span></div>
+        <div class="field"><label>Email</label><input type="email" id="ef-email" oninput="validateEmail(this)"><span class="field-err" id="ef-email-err"></span></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="goBackToStep1()">← Back</button>
+        <button class="btn btn-primary" id="btn-save-emp" onclick="saveEmployee()">Create employee</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Employee Modal -->
+<div class="modal-bg" id="modal-edit-emp">
+  <div class="modal">
+    <h3>Edit employee</h3>
+    <div class="modal-err" id="edit-emp-err"></div>
+    <div class="field-row">
+      <div class="field"><label>First name *</label><input type="text" id="ee-first" oninput="validateName(this)"></div>
+      <div class="field"><label>Last name *</label><input type="text" id="ee-last" oninput="validateName(this)"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Department</label><input type="text" id="ee-dept"></div>
+      <div class="field"><label>Position</label><input type="text" id="ee-pos"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Phone</label><input type="tel" id="ee-phone" oninput="validatePhone(this)"><span class="field-err" id="ee-phone-err"></span></div>
+      <div class="field"><label>Email</label><input type="email" id="ee-email" oninput="validateEmail(this)"><span class="field-err" id="ee-email-err"></span></div>
+    </div>
+    <div class="field"><label>Status</label>
+      <select id="ee-status"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-edit-emp')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditEmployee()">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+if(!TOKEN){location.replace('/');throw'';}
+
+let _employees=[], _cards=[];
+let _addEmpLocalId='', _scannedUid='', _editEmpLocalId='';
+let _tapPollIv=null, _countdown=null;
+
+function showTab(tab){
+  document.getElementById('tab-employees').style.display=tab==='employees'?'':'none';
+  document.getElementById('tab-cards').style.display=tab==='cards'?'':'none';
+  document.getElementById('page-title').textContent=tab==='cards'?'Cards':'Employees';
+  const activeNav=tab==='cards'?'cards':'employees';
+  // update sidebar active state
+  document.querySelectorAll('.ni').forEach(n=>{
+    n.classList.toggle('active',
+      (activeNav==='employees'&&n.href&&n.href.endsWith('/employees.html'))||
+      (activeNav==='cards'&&n.href&&n.href.includes('#cards')));
+  });
+}
+
+function loadPageData(){
+  return lg('/api/local/employees').then(r=>{
+    if(!r?.employees)return;
+    _employees=r.employees;_cards=[];
+    for(const e of _employees)for(const c of(e.cards||[]))
+      _cards.push({uid:c.uid,label:c.label,employee:(e.first_name||'')+' '+(e.last_name||''),type:c.type,status:c.status,localId:e.local_id});
+    renderEmployees();renderCards();
+  });
+}
+
+function renderEmployees(){
+  const q=(document.getElementById('emp-q')?.value||'').toLowerCase();
+  const st=document.getElementById('emp-st')?.value||'';
+  const rows=_employees.filter(e=>(!q||((e.first_name||'')+' '+(e.last_name||'')).toLowerCase().includes(q)||(e.department||'').toLowerCase().includes(q))&&(!st||e.status===st));
+  const b=document.getElementById('emp-body');if(!b)return;
+  b.innerHTML=rows.length?rows.map(e=>{
+    const name=(e.first_name||'')+' '+(e.last_name||'');
+    return`<tr>
+      <td><div style="display:flex;align-items:center;gap:7px">${av(name)}<div><div style="font-weight:500">${name}</div>${e.email?`<div style="font-size:11px;color:var(--muted)">${e.email}</div>`:''}</div></div></td>
+      <td class="hide-xs" style="color:var(--muted);font-size:12px"><div>${e.department||'—'}</div>${e.position?`<div style="font-size:11px;color:var(--hint)">${e.position}</div>`:''}</td>
+      <td style="color:var(--muted)">${(e.cards||[]).length}</td>
+      <td><span class="badge ${(e.status||'active')==='active'?'b-active':'b-inactive'}">${e.status||'active'}</span></td>
+      <td><span class="badge ${(e.synced!==false)?'b-synced':'b-pending'}">${(e.synced!==false)?'Synced':'Local'}</span></td>
+      <td style="display:flex;gap:4px">
+        <button class="btn-icon" title="Add card" onclick="openAddCard('${e.local_id||''}')">🪪</button>
+        <button class="btn-icon" title="Edit" onclick="openEditEmployeeById('${(e.local_id||'').replace(/'/g,'')}')">✎</button>
+        <button class="btn-icon" title="Delete" onclick="confirmDeleteEmployee('${e.local_id||''}','${(e.first_name||'')+' '+(e.last_name||'')}')" style="color:var(--red-tx)">🗑</button>
+      </td>
+    </tr>`;}).join('')
+    :'<tr class="empty-row"><td colspan="6">No employees found</td></tr>';
+}
+
+function renderCards(){
+  const q=(document.getElementById('card-q')?.value||'').toLowerCase();
+  const st=document.getElementById('card-st')?.value||'';
+  const rows=_cards.filter(c=>(!q||(c.uid||'').toLowerCase().includes(q)||(c.employee||'').toLowerCase().includes(q))&&(!st||c.status===st));
+  const b=document.getElementById('card-body');if(!b)return;
+  b.innerHTML=rows.length?rows.map(c=>`
+    <tr>
+      <td style="font-family:ui-monospace,monospace;font-size:11px">${c.uid}</td>
+      <td style="color:var(--muted)">${c.label||'—'}</td>
+      <td>${c.employee||'—'}</td>
+      <td class="hide-xs" style="color:var(--muted);font-size:11px">${c.type||'mifare_uid'}</td>
+      <td><span class="badge ${c.status==='active'?'b-active':c.status==='lost'?'b-lost':'b-inactive'}">${c.status}</span></td>
+    </tr>`).join('')
+    :'<tr class="empty-row"><td colspan="5">No cards found</td></tr>';
+}
+
+// ── Add employee flow ─────────────────────────────────────────────────────────
+function openAddEmployee(){
+  _scannedUid='';_addEmpLocalId='';
+  ['ef-uid','ef-label','ef-first','ef-last','ef-dept','ef-pos','ef-phone','ef-email'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  document.getElementById('ef-type').value='mifare_uid';
+  document.getElementById('emp-step1').style.display='';
+  document.getElementById('emp-step2').style.display='none';
+  document.getElementById('btn-step1-next').disabled=true;
+  document.getElementById('btn-step1-next').textContent='Next →';
+  document.getElementById('btn-step1-next').onclick=goToStep2;
+  hideErr('emp-err');
+  resetTapWidget();
+  document.getElementById('modal-emp').classList.add('show');
+  startScanCapture();
+}
+
+function resetTapWidget(){
+  document.getElementById('tap-widget-area').innerHTML=
+    `<div class="tap-widget"><div class="tap-icon">&#x1F4B3;</div><div class="tap-msg">Tap card on IN reader</div><div class="tap-sub">Waiting for scan…</div><div class="tap-timer" id="tap-countdown">—</div></div>`;
+}
+
+function onUidManualInput(){
+  const uid=document.getElementById('ef-uid').value.trim().toUpperCase();
+  _scannedUid=uid;
+  document.getElementById('btn-step1-next').disabled=uid.length<4;
+  if(uid.length>=4){
+    document.getElementById('tap-widget-area').innerHTML=
+      `<div class="tap-ok"><div style="font-size:20px">✅</div><div style="font-size:13px;font-weight:500;margin-top:4px">UID entered manually</div><div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);margin-top:2px">${uid}</div></div>`;
+  }
+}
+
+async function startScanCapture(){
+  stopTapPoll();
+  await lpost('/api/employees/card',{local_id:'__scan__',label:'',type:'mifare_uid'});
+  startTapCountdown(30);
+  startTapPoll(true);
+}
+
+function startTapCountdown(sec){
+  if(_countdown)clearInterval(_countdown);
+  let s=sec;
+  _countdown=setInterval(()=>{s--;const el=document.getElementById('tap-countdown');if(el)el.textContent=s>0?s:'—';if(s<=0){clearInterval(_countdown);_countdown=null;}},1000);
+}
+
+function startTapPoll(scanOnly=false){
+  if(_tapPollIv)clearInterval(_tapPollIv);
+  _tapPollIv=setInterval(async()=>{
+    const r=await lg('/api/employees/pending');if(!r)return;
+    if(r.captured){
+      stopTapPoll();
+      const uid=r.uid||'';_scannedUid=uid;
+      document.getElementById('ef-uid').value=uid;
+      document.getElementById('btn-step1-next').disabled=false;
+      document.getElementById('tap-widget-area').innerHTML=
+        `<div class="tap-ok"><div style="font-size:20px">✅</div><div style="font-size:13px;font-weight:500;margin-top:4px">Card scanned!</div><div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);margin-top:2px">${uid}</div></div>`;
+      if(!scanOnly){document.getElementById('btn-save-emp').style.display='';document.getElementById('btn-save-emp').textContent='Done';document.getElementById('btn-save-emp').onclick=()=>{closeModal('modal-emp');loadPageData();};}
+    }else if(!r.pending&&!r.captured){stopTapPoll();const el=document.getElementById('tap-countdown');if(el)el.textContent='—';}
+  },600);
+}
+
+function stopTapPoll(){if(_tapPollIv){clearInterval(_tapPollIv);_tapPollIv=null;}if(_countdown){clearInterval(_countdown);_countdown=null;}}
+
+function goToStep2(){
+  const uid=document.getElementById('ef-uid').value.trim().toUpperCase();
+  if(uid.length<4){showErr('emp-err','Scan a card or enter UID first');return;}
+  _scannedUid=uid;stopTapPoll();
+  document.getElementById('step2-uid-display').textContent=uid;
+  document.getElementById('emp-step1').style.display='none';
+  document.getElementById('emp-step2').style.display='';
+  document.getElementById('ef-first').focus();
+}
+
+function goBackToStep1(){
+  document.getElementById('emp-step1').style.display='';
+  document.getElementById('emp-step2').style.display='none';
+  hideErr('emp-err');startScanCapture();
+}
+
+function openAddCard(localId){
+  _addEmpLocalId=localId;_scannedUid='';
+  document.getElementById('ef-uid').value='';document.getElementById('ef-label').value='';
+  document.getElementById('ef-type').value='mifare_uid';
+  document.getElementById('emp-step1').style.display='';
+  document.getElementById('emp-step2').style.display='none';
+  document.getElementById('btn-step1-next').disabled=true;
+  document.getElementById('btn-step1-next').textContent='Assign card';
+  document.getElementById('btn-step1-next').onclick=assignCardToEmployee;
+  resetTapWidget();hideErr('emp-err');
+  document.getElementById('modal-emp').classList.add('show');
+  startScanCapture();
+}
+
+async function assignCardToEmployee(){
+  const uid=document.getElementById('ef-uid').value.trim().toUpperCase();
+  if(!uid||!_addEmpLocalId)return;
+  const r=await lpost('/api/employees/card/assign',{local_id:_addEmpLocalId,uid,label:document.getElementById('ef-label').value.trim(),type:document.getElementById('ef-type').value});
+  if(r?.ok){toast('Card assigned ✓');closeModal('modal-emp');loadPageData();}else toast('Error assigning card');
+}
+
+function validatePhone(input){
+  const val=input.value.trim();const err=document.getElementById(input.id+'-err');
+  if(!val){input.classList.remove('invalid','valid');if(err)err.classList.remove('show');return true;}
+  const valid=/^[+0-9\s\-()\.]+$/.test(val)&&val.replace(/\D/g,'').length>=6;
+  input.classList.toggle('invalid',!valid);input.classList.toggle('valid',valid);
+  if(err){err.textContent=valid?'':'Invalid phone';err.classList.toggle('show',!valid);}
+  return valid;
+}
+function validateEmail(input){
+  const val=input.value.trim();const err=document.getElementById(input.id+'-err');
+  if(!val){input.classList.remove('invalid','valid');if(err)err.classList.remove('show');return true;}
+  const valid=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  input.classList.toggle('invalid',!valid);input.classList.toggle('valid',valid);
+  if(err){err.textContent=valid?'':'Invalid email';err.classList.toggle('show',!valid);}
+  return valid;
+}
+function validateName(input){
+  const val=input.value.trim();
+  const valid=val.length===0||/^[a-zA-ZÀ-ÿ\s'-]+$/.test(val);
+  input.classList.toggle('invalid',!valid);input.classList.toggle('valid',val.length>0&&valid);
+  return valid;
+}
+
+async function saveEmployee(){
+  const first=document.getElementById('ef-first').value.trim();
+  const last=document.getElementById('ef-last').value.trim();
+  hideErr('emp-err');
+  if(!first&&!last){showErr('emp-err','First or last name required');return;}
+  if(!validatePhone(document.getElementById('ef-phone'))||!validateEmail(document.getElementById('ef-email'))){showErr('emp-err','Please fix the errors above');return;}
+  const btn=document.getElementById('btn-save-emp');btn.disabled=true;btn.textContent='Saving…';
+  const res=await lpost('/api/employees',{
+    first_name:first,last_name:last,
+    department:document.getElementById('ef-dept').value.trim(),
+    position:document.getElementById('ef-pos').value.trim(),
+    phone:document.getElementById('ef-phone').value.trim(),
+    email:document.getElementById('ef-email').value.trim(),
+    card_uid:_scannedUid,card_label:document.getElementById('ef-label').value.trim(),
+    card_type:document.getElementById('ef-type').value,
+  });
+  btn.disabled=false;
+  if(res?.ok){toast('Employee created ✓');closeModal('modal-emp');await loadPageData();}
+  else{showErr('emp-err',res?.error||'Save failed');btn.textContent='Create employee';}
+}
+
+function openEditEmployeeById(localId){
+  const emp=_employees.find(e=>e.local_id===localId);
+  if(!emp){toast('Employee not found');return;}
+  _editEmpLocalId=emp.local_id||'';
+  document.getElementById('ee-first').value=emp.first_name||'';
+  document.getElementById('ee-last').value=emp.last_name||'';
+  document.getElementById('ee-dept').value=emp.department||'';
+  document.getElementById('ee-pos').value=emp.position||'';
+  document.getElementById('ee-phone').value=emp.phone||'';
+  document.getElementById('ee-email').value=emp.email||'';
+  document.getElementById('ee-status').value=emp.status||'active';
+  ['ee-first','ee-last','ee-dept','ee-pos','ee-phone','ee-email'].forEach(id=>{const el=document.getElementById(id);if(el)el.classList.remove('invalid','valid');});
+  hideErr('edit-emp-err');
+  document.getElementById('modal-edit-emp').classList.add('show');
+}
+
+async function saveEditEmployee(){
+  const first=document.getElementById('ee-first').value.trim();
+  const last=document.getElementById('ee-last').value.trim();
+  hideErr('edit-emp-err');
+  if(!first&&!last){showErr('edit-emp-err','First or last name required');return;}
+  if(!validatePhone(document.getElementById('ee-phone'))){showErr('edit-emp-err','Fix phone number');return;}
+  if(!validateEmail(document.getElementById('ee-email'))){showErr('edit-emp-err','Fix email address');return;}
+  const r=await lpost('/api/employees/update',{
+    local_id:_editEmpLocalId,first_name:first,last_name:last,
+    department:document.getElementById('ee-dept').value.trim(),
+    position:document.getElementById('ee-pos').value.trim(),
+    phone:document.getElementById('ee-phone').value.trim(),
+    email:document.getElementById('ee-email').value.trim(),
+    status:document.getElementById('ee-status').value,
+  });
+  if(r?.ok){toast('Employee updated ✓');closeModal('modal-edit-emp');await loadPageData();}
+  else showErr('edit-emp-err',r?.error||'Save failed');
+}
+
+function confirmDeleteEmployee(localId,name){
+  if(!confirm(`Delete employee "${name.trim()}"?\n\nThis will remove them from the local whitelist and they will no longer be able to access the door.\n\nThis action cannot be undone.`))return;
+  lpost('/api/employees/delete',{local_id:localId}).then(r=>{
+    if(r?.ok){toast(`${name.trim()} deleted`);loadPageData();}else toast('Error: '+(r?.error||'failed'));
+  });
+}
+
+async function forceSync(){toast('Syncing…');await Promise.all([loadPageData(),syncServer()]);toast('Done ✓');}
+
+// Tab init from URL hash
+const isCards=location.hash==='#cards';
+initShell(isCards?'cards':'employees');
+if(isCards)showTab('cards');
+loadPageData();
+setInterval(loadPageData,60000);
+</script>
+</body>
+</html>

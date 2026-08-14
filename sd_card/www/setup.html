@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>InOut — Device setup</title>
+<link rel="stylesheet" href="/common.css">
+</head>
+<body>
+<div id="app" class="show">
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="logo"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4z"/></svg></div><div><div class="logo-name">InOut</div><div class="logo-sub" id="sb-id">—</div></div></div>
+  <nav id="main-nav"></nav>
+  <div class="user-chip"><div class="user-av" id="user-av">A</div><div class="user-info"><div class="user-name" id="user-name">—</div><div class="user-role" id="user-role">—</div></div></div>
+  <div class="sync-bar"><div class="sdot off" id="sdot"></div><span id="sync-txt">Connecting…</span></div>
+  <div class="sidebar-footer">
+    <button class="ni" onclick="openChangePassword()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Change password</button>
+    <button class="ni" onclick="doLogout()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button>
+  </div>
+</aside>
+<div class="main-area">
+  <div class="topbar">
+    <button class="menu-btn" onclick="openSidebar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+    <span class="page-title">Device setup</span>
+    <div class="tb-right"><span class="server-chip" id="chip">● Offline</span></div>
+  </div>
+  <div class="offline-bar" id="offline-bar"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Server unreachable.</div>
+  <div class="content">
+    <div id="setup-status-card" style="margin-bottom:14px"></div>
+
+    <div class="card">
+      <div class="card-hd"><h2>Server configuration</h2></div>
+      <div style="border-bottom:1px solid var(--border)"></div>
+      <div class="setup-field"><label>Server URL</label><input type="url" id="f-server" placeholder="" autocapitalize="none" autocorrect="off"></div>
+      <div class="setup-field"><label>Device token <span style="color:var(--hint);font-weight:400">— from admin panel</span></label><input type="password" id="f-token" placeholder="tok_••••••••" autocapitalize="none" autocorrect="off"></div>
+      <div class="setup-field">
+        <label>Timezone</label>
+        <select id="f-tz" onchange="saveTz()">
+          <option value="Asia/Tbilisi">Georgia (Tbilisi) UTC+4</option>
+          <option value="Europe/London">London UTC+0/+1</option>
+          <option value="Europe/Paris">Central Europe UTC+1/+2</option>
+          <option value="Europe/Moscow">Moscow UTC+3</option>
+          <option value="Asia/Dubai">Dubai UTC+4</option>
+          <option value="Asia/Istanbul">Istanbul UTC+3</option>
+          <option value="America/New_York">New York UTC-5/-4</option>
+          <option value="America/Los_Angeles">Los Angeles UTC-8/-7</option>
+          <option value="UTC">UTC</option>
+        </select>
+      </div>
+      <div style="padding:11px 15px;display:flex;gap:8px">
+        <button class="btn btn-primary" style="flex:1" id="btn-save-srv" onclick="saveServerConfig()">Save &amp; test connection</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd"><h2>Device time</h2><span id="lbl-ntp-chip"></span></div>
+      <div style="border-bottom:1px solid var(--border)"></div>
+      <div class="setup-field setup-field-row">
+        <span style="font-size:13px;color:var(--muted)">Current time</span>
+        <span id="lbl-device-time" style="font-family:ui-monospace,monospace;font-size:13px">—</span>
+      </div>
+      <div class="setup-field">
+        <label>Set time manually <span style="font-weight:400;color:var(--hint)">— used when NTP unavailable</span></label>
+        <input type="datetime-local" id="f-time" step="1">
+      </div>
+      <div style="padding:11px 15px">
+        <button class="btn btn-primary" style="width:100%" onclick="setDeviceTime()">Set device time</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd"><h2>Hardware pins</h2><span style="font-size:11px;color:var(--muted)">Requires reboot</span></div>
+      <div style="border-bottom:1px solid var(--border)"></div>
+      <div class="setup-field"><label>CS IN reader</label><input type="number" id="f-csin" min="0" max="39" placeholder="4"></div>
+      <div class="setup-field"><label>CS OUT reader</label><input type="number" id="f-csout" min="0" max="39" placeholder="25"></div>
+      <div class="setup-field"><label>CS SD card</label><input type="number" id="f-cssd" min="0" max="39" placeholder="5"></div>
+      <div class="setup-field"><label>Relay pin</label><input type="number" id="f-relay" min="0" max="39" placeholder="26"></div>
+      <div class="setup-field"><label>Relay duration (ms)</label><input type="number" id="f-relayms" min="500" max="10000" step="100" placeholder="3000"></div>
+      <div class="setup-field setup-field-row">
+        <div><label>Active-LOW relay</label><div style="font-size:11px;color:var(--hint);margin-top:2px">Enable if relay triggers in reverse</div></div>
+        <label class="toggle"><input type="checkbox" id="f-activelow"><span class="ttrack"></span></label>
+      </div>
+      <div style="padding:11px 15px;display:flex;gap:8px">
+        <button class="btn btn-primary" style="flex:1" id="btn-save-hw" onclick="saveHwConfig()">Save hardware config</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd"><h2>Reader roles</h2></div>
+      <div style="border-bottom:1px solid var(--border)"></div>
+      <div style="padding:12px 15px">
+        <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;margin-bottom:12px">
+          <div style="border:2px solid var(--blue);border-radius:var(--r);padding:12px 8px;text-align:center">
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Entry</div>
+            <div style="font-size:20px;font-weight:600">→ IN</div>
+            <div id="lbl-cs-in" style="font-size:10px;color:var(--hint);font-family:monospace;margin-top:4px">GPIO —</div>
+          </div>
+          <div style="color:var(--muted);font-size:18px;text-align:center">⇄</div>
+          <div style="border:1px solid var(--border);border-radius:var(--r);padding:12px 8px;text-align:center">
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Exit</div>
+            <div style="font-size:20px;font-weight:600">OUT →</div>
+            <div id="lbl-cs-out" style="font-size:10px;color:var(--hint);font-family:monospace;margin-top:4px">GPIO —</div>
+          </div>
+        </div>
+        <button class="btn btn-sm" style="width:100%" onclick="swapReaders()">⇄ Swap IN / OUT roles</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd"><h2>Danger zone</h2></div>
+      <div style="border-bottom:1px solid var(--border)"></div>
+      <div style="padding:11px 15px;display:flex;gap:8px">
+        <button class="btn btn-danger btn-sm" onclick="doReset('wifi')">Reset WiFi</button>
+        <button class="btn btn-danger btn-sm" onclick="doReset('all')">Factory reset</button>
+        <button class="btn btn-sm" onclick="doOpen()">🔓 Test relay</button>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/common.js"></script>
+<script>
+if(!TOKEN){location.replace('/');throw'';}
+if(ROLE!=='super_admin'){location.replace('/');throw'';}
+initShell('setup');
+
+let _status=null;
+
+function saveTz(){
+  const tz=document.getElementById('f-tz')?.value;if(!tz)return;
+  localStorage.setItem('cp_tz',tz);
+  lpost('/api/config',{timezone:tz}).then(r=>{if(r?.ok)toast('Timezone saved ✓');});
+}
+
+function applyStoredTz(){const tz=localStorage.getItem('cp_tz')||'Asia/Tbilisi';const el=document.getElementById('f-tz');if(el)el.value=tz;}
+
+async function loadStatus(){
+  const s=await lg('/api/local/status');if(!s)return;_status=s;
+  const sb=document.getElementById('sb-id');if(sb)sb.textContent=s.identifier||'Device';
+  const lblIn=document.getElementById('lbl-cs-in');const lblOut=document.getElementById('lbl-cs-out');
+  if(lblIn)lblIn.textContent='GPIO '+s.cs_in;if(lblOut)lblOut.textContent='GPIO '+s.cs_out;
+  applyStoredTz();
+  const srv=document.getElementById('f-server');
+  if(srv&&document.activeElement!==srv)srv.value=s.server_url||'';
+  ['f-csin','f-csout','f-cssd','f-relay','f-relayms'].forEach((id,i)=>{
+    const el=document.getElementById(id);
+    if(el)el.placeholder=[s.cs_in,s.cs_out,s.cs_sd,s.relay_pin,s.relay_ms][i]||el.placeholder;
+  });
+  const sc=document.getElementById('setup-status-card');
+  if(sc)sc.innerHTML=`<div class="card">
+    <div class="card-hd"><h2>Device status</h2><span style="font-size:11px;padding:3px 8px;background:var(--blue-bg);color:var(--blue-tx);border-radius:99px">v${s.firmware||'?'}</span></div>
+    <div style="border-bottom:1px solid var(--border)"></div>
+    <div class="info-row"><span class="ir-l">IP</span><span class="ir-v">${s.ip||'—'}</span></div>
+    <div class="info-row"><span class="ir-l">Token</span><span class="ir-v">${s.token_set?'<span class="chip chip-g">Set ✓</span>':'<span class="chip chip-r">Not set</span>'}</span></div>
+    <div class="info-row"><span class="ir-l">SD card</span><span class="ir-v">${s.sd_mounted?s.sd_used_mb+'/'+s.sd_total_mb+' MB':'<span class="chip chip-r">Not mounted</span>'}</span></div>
+    <div class="info-row"><span class="ir-l">NTP</span><span class="ir-v">${s.ntp_synced?'<span class="chip chip-g">Synced</span>':'<span class="chip chip-a">Not synced</span>'}</span></div>
+    <div class="info-row"><span class="ir-l">LCD</span><span class="ir-v">${s.lcd_found?'<span class="chip chip-g">Found</span>':'<span class="chip chip-r">Not found</span>'}</span></div>
+    <div class="info-row"><span class="ir-l">Uptime</span><span class="ir-v">${fmtUptime(s.uptime_s)}</span></div>
+  </div>`;
+}
+
+async function loadDeviceTime(){
+  const r=await lg('/api/time');if(!r)return;
+  const el=document.getElementById('lbl-device-time');const chip=document.getElementById('lbl-ntp-chip');
+  if(el)el.textContent=r.ts?r.ts.replace('T',' '):'—';
+  if(chip)chip.innerHTML=r.ntp
+    ?'<span style="font-size:11px;padding:2px 8px;background:var(--green-bg);color:var(--green-tx);border-radius:99px">NTP synced</span>'
+    :'<span style="font-size:11px;padding:2px 8px;background:var(--amber-bg);color:var(--amber-tx);border-radius:99px">Not synced</span>';
+  const inp=document.getElementById('f-time');if(inp&&r.ts&&!inp.value)inp.value=r.ts.substring(0,19);
+}
+
+async function setDeviceTime(){
+  const ts=document.getElementById('f-time')?.value;if(!ts){toast('Pick a date/time first');return;}
+  const r=await lpost('/api/time',{ts});
+  if(r?.ok){toast('Time set ✓');loadDeviceTime();}else toast('Error: '+(r?.error||'failed'));
+}
+
+async function saveServerConfig(){
+  const sv=document.getElementById('f-server').value.trim();const tk=document.getElementById('f-token').value.trim();
+  if(!sv){toast('Enter server URL');return;}
+  const btn=document.getElementById('btn-save-srv');btn.disabled=true;btn.textContent='Saving…';
+  const body={server_url:sv};if(tk)body.device_token=tk;
+  const r=await lpost('/api/config',body);
+  btn.disabled=false;btn.textContent='Save & test connection';
+  if(r?.ok){toast('Saved ✓');document.getElementById('f-token').value='';setTimeout(loadStatus,600);}
+  else toast('Error: '+(r?.error||'failed'));
+}
+
+async function saveHwConfig(){
+  const body={};
+  [['f-csin','cs_in'],['f-csout','cs_out'],['f-cssd','cs_sd'],['f-relay','relay_pin'],['f-relayms','relay_ms']].forEach(([id,key])=>{const v=document.getElementById(id)?.value;if(v)body[key]=parseInt(v);});
+  body.active_low=document.getElementById('f-activelow')?.checked||false;
+  const btn=document.getElementById('btn-save-hw');btn.disabled=true;btn.textContent='Saving…';
+  const r=await lpost('/api/config',body);
+  btn.disabled=false;btn.textContent='Save hardware config';
+  r?.ok?toast('Saved — reboot to apply ✓'):toast('Error: '+(r?.error||'failed'));
+}
+
+async function doOpen(){const r=await fetch('/api/open',{method:'POST',headers:headers()});toast(r.ok?'Relay triggered ✓':'Failed');}
+
+async function doReset(type){
+  if(!confirm(type==='all'?'Factory reset — erase all settings?':'Reset WiFi credentials?'))return;
+  await fetch('/api/reset?type='+type,{method:'POST',headers:headers()});toast('Resetting…');
+}
+
+function swapReaders(){
+  if(!confirm('Swap IN and OUT reader roles?'))return;
+  lpost('/api/config',{cs_in:_status?.cs_out,cs_out:_status?.cs_in}).then(r=>{
+    if(r?.ok){toast('Readers swapped ✓ — reboot to apply');setTimeout(loadStatus,800);}
+    else toast('Error: '+(r?.error||'failed'));
+  });
+}
+
+loadStatus();
+loadDeviceTime();
+setInterval(loadStatus,30000);
+setInterval(loadDeviceTime,30000);
+</script>
+</body>
+</html>

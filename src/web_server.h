@@ -266,7 +266,7 @@ private:
         Session s;
         bool authed = AuthManager.validate(getToken(), s);
         JsonDocument doc;
-        doc["firmware"]          = "0.4.3";
+        doc["firmware"]          = FIRMWARE_VERSION;
         doc["identifier"]        = Config.identifier;
         doc["ip"]                = WiFi.localIP().toString();
         doc["rssi"]              = WiFi.RSSI();
@@ -794,7 +794,7 @@ public:
                 _server.send(404, "text/plain", "Photo not found");
                 return;
             }
-            // Serve any SD www file (JS, CSS, icons etc)
+            // Serve any SD www file (JS, CSS, HTML pages, icons etc)
             if (SdManager.isMounted()) {
                 if (uri.indexOf("..") >= 0) {
                     _server.sendHeader("Connection", "close");
@@ -802,6 +802,35 @@ public:
                     return;
                 }
                 String sdPath = "/www" + uri;
+                // Determine content type from extension
+                auto mimeOf = [](const String& p) -> const char* {
+                    if (p.endsWith(".html")) return "text/html";
+                    if (p.endsWith(".css"))  return "text/css";
+                    if (p.endsWith(".js"))   return "application/javascript";
+                    if (p.endsWith(".json")) return "application/json";
+                    if (p.endsWith(".png"))  return "image/png";
+                    if (p.endsWith(".svg"))  return "image/svg+xml";
+                    if (p.endsWith(".jpg"))  return "image/jpeg";
+                    return "text/plain";
+                };
+                bool isAsset = uri.endsWith(".css") || uri.endsWith(".js");
+                // Try .gz first when the browser accepts it
+                bool wantsGzip = _server.hasHeader("Accept-Encoding")
+                    && _server.header("Accept-Encoding").indexOf("gzip") >= 0;
+                if (wantsGzip && SD.exists(sdPath + ".gz")) {
+                    File f = SD.open(sdPath + ".gz", FILE_READ);
+                    if (f && f.size() > 0) {
+                        _server.sendHeader("Cache-Control",
+                            isAsset ? "max-age=3600" : "no-cache, no-store, must-revalidate");
+                        _server.sendHeader("Connection", "close");
+                        // streamFile() sets Content-Encoding: gzip automatically
+                        // when f.name() ends in .gz — do not add it here too.
+                        _server.streamFile(f, mimeOf(sdPath));
+                        f.close(); return;
+                    }
+                    if (f) f.close();
+                }
+                // Raw file fallback (serveFile sets max-age=60 for all files)
                 if (SdManager.serveFile(_server, sdPath)) return;
             }
             _server.sendHeader("Connection", "close");

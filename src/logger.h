@@ -62,14 +62,28 @@ public:
 
     void log(LogLevel level, const char* module, const String& msg, const String& detail = "") {
         const char* lvl = lvlStr(level);
-        if (detail.length() > 0)
-            Serial.printf("[%s][%s] %s | %s\n", lvl, module, msg.c_str(), detail.c_str());
-        else
-            Serial.printf("[%s][%s] %s\n", lvl, module, msg.c_str());
 
-        if (!_sdReady || !_mutex) return;
-        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(200)) != pdTRUE) return;
-        appendToSD(lvl, module, msg, detail);
+        // Format the complete line into a single buffer, then write() it in
+        // one call.  ESP-IDF uart_write_bytes() is thread-safe; a single
+        // write() is atomic, so two tasks can't interleave partial lines.
+        char line[384];
+        if (detail.length() > 0)
+            snprintf(line, sizeof(line), "[%s][%s] %s | %s\n", lvl, module, msg.c_str(), detail.c_str());
+        else
+            snprintf(line, sizeof(line), "[%s][%s] %s\n", lvl, module, msg.c_str());
+
+        if (!_mutex) {
+            Serial.write((const uint8_t*)line, strlen(line));
+            return;
+        }
+        // Mutex serialises both the Serial write and the SD append so the two
+        // outputs can never diverge or interleave across tasks.
+        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(300)) != pdTRUE) {
+            Serial.write((const uint8_t*)line, strlen(line));
+            return;
+        }
+        Serial.write((const uint8_t*)line, strlen(line));
+        if (_sdReady) appendToSD(lvl, module, msg, detail);
         xSemaphoreGive(_mutex);
     }
 

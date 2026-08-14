@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>InOut — Admins</title>
+<link rel="stylesheet" href="/common.css">
+</head>
+<body>
+<div id="app" class="show">
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="logo"><div class="logo-mark"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4z"/></svg></div><div><div class="logo-name">InOut</div><div class="logo-sub" id="sb-id">—</div></div></div>
+  <nav id="main-nav"></nav>
+  <div class="user-chip"><div class="user-av" id="user-av">A</div><div class="user-info"><div class="user-name" id="user-name">—</div><div class="user-role" id="user-role">—</div></div></div>
+  <div class="sync-bar"><div class="sdot off" id="sdot"></div><span id="sync-txt">Connecting…</span></div>
+  <div class="sidebar-footer">
+    <button class="ni" onclick="openChangePassword()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Change password</button>
+    <button class="ni" onclick="doLogout()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Sign out</button>
+  </div>
+</aside>
+<div class="main-area">
+  <div class="topbar">
+    <button class="menu-btn" onclick="openSidebar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+    <span class="page-title">Admin accounts</span>
+    <div class="tb-right"><span class="server-chip" id="chip">● Offline</span></div>
+  </div>
+  <div class="offline-bar" id="offline-bar"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Server unreachable.</div>
+  <div class="content">
+    <div class="card">
+      <div class="card-hd"><h2>Admin accounts</h2>
+        <button class="btn btn-sm btn-primary" onclick="openAddAdmin()">+ Add admin</button>
+      </div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+        <tbody id="admin-body"></tbody>
+      </table></div>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<!-- Add Admin Modal -->
+<div class="modal-bg" id="modal-admin">
+  <div class="modal">
+    <h3>Add admin</h3>
+    <div class="modal-err" id="admin-err"></div>
+    <div class="field"><label>Username</label><input type="text" id="af-user" autocapitalize="none"></div>
+    <div class="field"><label>Password <span style="font-weight:400;color:var(--hint)">(min 8 chars)</span></label><input type="password" id="af-pass" placeholder="••••••••"></div>
+    <div class="field"><label>Role</label>
+      <select id="af-role"><option value="admin">Admin — dashboard, employees, cards</option><option value="super_admin">Super admin — full access</option></select>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5">User will be required to change their password on first login.</div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-admin')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAdmin()">Create admin</button>
+    </div>
+  </div>
+</div>
+
+<script src="/common.js"></script>
+<script>
+if(!TOKEN){location.replace('/');throw'';}
+if(ROLE!=='super_admin'){location.replace('/');throw'';}
+initShell('admins');
+
+let _admins=[];
+
+async function loadAdmins(){
+  const r=await lg('/api/admins');
+  if(r?.admins){_admins=r.admins;renderAdmins();}
+}
+
+function renderAdmins(){
+  const b=document.getElementById('admin-body');if(!b)return;
+  b.innerHTML=_admins.length?_admins.map(a=>`
+    <tr>
+      <td style="font-weight:500">${a.username}</td>
+      <td><span class="badge ${a.role==='super_admin'?'b-super':'b-active'}">${a.role==='super_admin'?'Super Admin':'Admin'}</span></td>
+      <td><span class="badge ${a.must_change_password?'b-pending':'b-synced'}">${a.must_change_password?'Must change pwd':'Active'}</span></td>
+      <td style="display:flex;gap:4px">
+        <button class="btn-icon" title="Reset password" onclick="promptResetPassword('${a.username}')">🔑</button>
+        <button class="btn-icon" title="Delete" onclick="deleteAdmin('${a.username}')">🗑</button>
+      </td>
+    </tr>`).join('')
+    :'<tr class="empty-row"><td colspan="4">No admins found</td></tr>';
+}
+
+function openAddAdmin(){
+  document.getElementById('af-user').value='';document.getElementById('af-pass').value='';
+  document.getElementById('af-role').value='admin';hideErr('admin-err');
+  document.getElementById('modal-admin').classList.add('show');
+}
+async function saveAdmin(){
+  const user=document.getElementById('af-user').value.trim();
+  const pass=document.getElementById('af-pass').value;
+  const role=document.getElementById('af-role').value;
+  hideErr('admin-err');
+  if(user.length<3){showErr('admin-err','Username min 3 chars');return;}
+  if(pass.length<8){showErr('admin-err','Password min 8 chars');return;}
+  const r=await lpost('/api/admins',{username:user,password:pass,role});
+  if(r?.ok){toast('Admin created ✓');closeModal('modal-admin');await loadAdmins();}
+  else showErr('admin-err',r?.error||'Failed');
+}
+async function deleteAdmin(username){
+  if(!confirm(`Delete admin "${username}"?`))return;
+  const r=await api('DELETE','/api/admins',{username});
+  if(r?.ok)toast('Deleted');else toast('Error: '+(r?.data?.error||'failed'));
+  await loadAdmins();
+}
+async function promptResetPassword(username){
+  const np=prompt(`New password for "${username}":`);
+  if(!np||np.length<8){toast('Min 8 chars');return;}
+  const r=await lpost('/api/admins/reset-password',{username,new_password:np});
+  r?.ok?toast('Password reset. User must change on next login.'):toast('Error: '+(r?.error||'failed'));
+}
+
+loadAdmins();
+</script>
+</body>
+</html>
