@@ -30,8 +30,14 @@ struct SdIoLock {
     SemaphoreHandle_t h; bool held = false;
     SdIoLock(SemaphoreHandle_t handle, uint32_t timeoutMs = 3000) : h(handle) {
         held = h && xSemaphoreTakeRecursive(h, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        if (held && _sdLedDepth.fetch_add(1) == 0) digitalWrite(PIN_SD_LED, HIGH);
     }
-    ~SdIoLock() { if (held) xSemaphoreGiveRecursive(h); }
+    ~SdIoLock() {
+        if (held) {
+            xSemaphoreGiveRecursive(h);
+            if (_sdLedDepth.fetch_sub(1) == 1) digitalWrite(PIN_SD_LED, LOW);
+        }
+    }
 };
 
 struct SdManagerClass {
@@ -906,6 +912,14 @@ public:
 // aren't SdManager methods, so they need an explicit outer hold).
 struct SdManagerLock {
     bool held;
-    SdManagerLock(uint32_t timeoutMs = 3000) { held = SdManager.lock(timeoutMs); }
-    ~SdManagerLock() { if (held) SdManager.unlock(); }
+    SdManagerLock(uint32_t timeoutMs = 3000) {
+        held = SdManager.lock(timeoutMs);
+        if (held && _sdLedDepth.fetch_add(1) == 0) digitalWrite(PIN_SD_LED, HIGH);
+    }
+    ~SdManagerLock() {
+        if (held) {
+            SdManager.unlock();
+            if (_sdLedDepth.fetch_sub(1) == 1) digitalWrite(PIN_SD_LED, LOW);
+        }
+    }
 };

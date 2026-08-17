@@ -13,6 +13,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include <atomic>
 
 #define FIRMWARE_VERSION "0.4.9"
 
@@ -37,11 +38,42 @@
 // ── Other ─────────────────────────────────────────────────────────────────────
 #define DEFAULT_RELAY   26
 #define DEFAULT_BUZZ    15
-#define DEFAULT_LED1    14
-#define DEFAULT_LED2    13
-#define DEFAULT_LED3    12
 #define DEFAULT_RELAY_MS 3000
 #define DEFAULT_SERVER  ""
+
+// ── Status LEDs ──────────────────────────────────────────────────────────────
+#define PIN_SERVER_LED  27   // lit while talking to the server (sync/heartbeat/proxy/OTA)
+#define PIN_READER_LED  14   // lit while an NFC reader is being used; blinks once at boot if both pass self-test
+#define PIN_SD_LED      13   // lit while the SD card is being read or written
+#define PIN_CAM_LED     12   // lit while a photo capture is in progress
+
+// Simple RAII status LED — HIGH for the guard's lifetime, LOW after. Only
+// safe for call sites that can't run concurrently/nested with themselves
+// (READER_LED and CAM_LED are only ever touched from the single main loop).
+struct StatusLedGuard {
+    int pin;
+    StatusLedGuard(int p) : pin(p) { digitalWrite(pin, HIGH); }
+    ~StatusLedGuard() { digitalWrite(pin, LOW); }
+};
+
+// Depth-counted RAII status LED for pins whose "in use" state can be entered
+// concurrently or re-entrantly — e.g. ApiClient's HTTP methods can run at the
+// same time from syncTask and serialTask, and SdIoLock/SdManagerLock nest.
+// The LED only turns off once every concurrent/nested holder has released it.
+struct DepthLedGuard {
+    DepthLedGuard(int pin, std::atomic<int>& depth) : _pin(pin), _depth(depth) {
+        if (_depth.fetch_add(1) == 0) digitalWrite(_pin, HIGH);
+    }
+    ~DepthLedGuard() {
+        if (_depth.fetch_sub(1) == 1) digitalWrite(_pin, LOW);
+    }
+private:
+    int _pin;
+    std::atomic<int>& _depth;
+};
+
+static std::atomic<int> _serverLedDepth{0};
+static std::atomic<int> _sdLedDepth{0};
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
 // VN/VP (GPIO39/36) are input-only, no internal pull resistor — external

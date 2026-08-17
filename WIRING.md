@@ -24,13 +24,14 @@
 | SCL    | 22   |                            |
 
 ## Other
-| Signal | GPIO |
-|--------|------|
-| RELAY  | 26   |
-| BUZZ   | 27   |
-| LED1   | 14   |
-| LED2   | 13   |
-| LED3   | 12   |
+| Signal      | GPIO | Notes                                                       |
+|-------------|------|--------------------------------------------------------------|
+| RELAY       | 26   |                                                                |
+| BUZZ        | 15   |                                                                |
+| SERVER_LED  | 27   | lit while talking to the server (sync/heartbeat/proxy/OTA)   |
+| READER_LED  | 14   | lit while an NFC reader is in use; blinks once at boot if both readers pass self-test |
+| SD_LED      | 13   | lit while the SD card is being read or written               |
+| CAM_LED     | 12   | lit while a photo capture is in progress                     |
 
 ## UART2 — ESP32-CAM (AI-Thinker)
 | Signal        | Main ESP32 GPIO | CAM GPIO | Notes              |

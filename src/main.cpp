@@ -51,43 +51,46 @@ void buzz(uint32_t freq, uint32_t durationMs) {
 }
 
 // ── Feedback ──────────────────────────────────────────────────────────────────
+// Buzzer only — GPIO14/13/12 are now the READER/SD/CAM status LEDs (see
+// handleTap() for the READER_LED bracket that replaced the old per-outcome
+// LED flashes here).
 void feedbackGranted() {
-    digitalWrite(DEFAULT_LED1, HIGH);
     buzz(1000, 100); delay(120);
     buzz(1500,  80); delay(90);
-    digitalWrite(DEFAULT_LED1, LOW);
 }
 void feedbackDenied() {
     for (int i=0;i<3;i++) {
-        digitalWrite(DEFAULT_LED2, HIGH);
         buzz(300, 80); delay(120);
-        digitalWrite(DEFAULT_LED2, LOW); delay(60);
+        delay(60);
     }
 }
 void feedbackRegister() {
     for (int i=0;i<2;i++) { buzz(1200, 60); delay(100); }
-    digitalWrite(DEFAULT_LED1, HIGH); delay(200); digitalWrite(DEFAULT_LED1, LOW);
 }
 void feedbackBoot() {
     for (int f : {700,900,1100,1400}) { buzz(f, 55); delay(80); }
 }
 
 // ── Card tap ──────────────────────────────────────────────────────────────────
+// READER_LED brackets the whole function (both the registration branch and
+// the normal grant/deny branch) — the reader is "in use" for either.
 void handleTap(const String& uid, CardDirection dir) {
+    digitalWrite(PIN_READER_LED, HIGH);
     if (hasPendingTap()) {
         onRegistrationTap(uid);
         feedbackRegister();
         Lcd.showTap(true, "Card registered!");
+        digitalWrite(PIN_READER_LED, LOW);
         return;
     }
     ApiResponse r = ApiClient.processCard(uid, dir);
     // For toggle mode the device can't determine direction locally — leave blank on LCD.
     String dirStr = (Config.directionMode == "toggle") ? "" : (dir == DIR_IN ? "in" : "out");
-    digitalWrite(DEFAULT_LED3, HIGH);
     Lcd.showTap(r.granted, r.name, dirStr);
     if (r.granted) { feedbackGranted(); Relay.open(r.openMs); CamUart.capture(uid, r.happenedAt); }
     else           { feedbackDenied(); }
-    delay(40); digitalWrite(DEFAULT_LED3, LOW);
+    delay(40);
+    digitalWrite(PIN_READER_LED, LOW);
 }
 
 // ── Buttons ───────────────────────────────────────────────────────────────────
@@ -160,6 +163,7 @@ void performOta(const String& url, const String& version) {
         return;
     }
     _otaInProgress = true;
+    DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
     Logger.logf(LOG_INFO, "OTA", "Starting update v%s", version.c_str());
     Lcd.showOta(version);
 
@@ -325,7 +329,7 @@ void setup() {
 
     Logger.begin();
 
-    for (int p : {DEFAULT_LED1, DEFAULT_LED2, DEFAULT_LED3}) {
+    for (int p : {PIN_SERVER_LED, PIN_READER_LED, PIN_SD_LED, PIN_CAM_LED}) {
         pinMode(p, OUTPUT); digitalWrite(p, LOW);
     }
     // External pull-ups on VN/VP — plain INPUT (these pins have no internal pulls).
@@ -390,7 +394,6 @@ void setup() {
     wm.setConnectTimeout(30);
     wm.setAPCallback([](WiFiManager*) {
         Lcd.showWifi("InOut-Setup");
-        digitalWrite(DEFAULT_LED2, HIGH);
     });
 
     WiFiManagerParameter pServer("server", "Server URL",   Config.serverUrl.c_str(), 128);
@@ -403,7 +406,6 @@ void setup() {
         Lcd.showBoot("WiFi failed!");
         delay(2000); ESP.restart();
     }
-    digitalWrite(DEFAULT_LED2, LOW);
     Logger.log(LOG_INFO, "WIFI", "Connected", WiFi.localIP().toString() + "  RSSI=" + String(WiFi.RSSI()) + "dBm");
     Lcd.setFallback(WiFi.localIP().toString());
 
@@ -444,6 +446,10 @@ void setup() {
     bool outOk = NfcReader.isOk(READER_OUT);
     if (!inOk)  Logger.log(LOG_ERROR, "NFC", "IN reader not found", "CS=GPIO" + String(Config.csPin_IN));
     if (!outOk) Logger.log(LOG_ERROR, "NFC", "OUT reader not found", "CS=GPIO" + String(Config.csPin_OUT));
+    // Both readers passed self-test — confirm with a READER_LED blink.
+    if (inOk && outOk) {
+        digitalWrite(PIN_READER_LED, HIGH); delay(300); digitalWrite(PIN_READER_LED, LOW);
+    }
     Logger.logf(LOG_INFO, "SYS", "Ready  IN:%s OUT:%s  SD:%s  LCD:%s",
                 inOk                    ? "OK" : "FAIL",
                 outOk                   ? "OK" : "FAIL",

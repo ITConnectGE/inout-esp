@@ -238,6 +238,7 @@ public:
         if (!SdManager.getUnsyncedEmployees(arr)) return 0;
         int count = (int)arr.size();
         String body; serializeJson(_doc, body);
+        DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_ERROR, "SYNC", "Employees sync: mutex timeout");
             return -1;
@@ -344,6 +345,7 @@ public:
         }
 
         // ── Stream from SD to server — peak RAM is SSL context only ───────────
+        DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             SD.remove(tmpPath); return -1;
         }
@@ -389,6 +391,7 @@ public:
 
     bool syncWhitelist() {
         if (!serverReachable()) return false;
+        DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_ERROR, "SYNC", "Whitelist sync: mutex timeout");
             return false;
@@ -427,6 +430,7 @@ public:
 
     void sendHeartbeat() {
         if (!serverReachable()) return;
+        DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_WARN, "API", "Heartbeat: mutex timeout");
             return;
@@ -483,6 +487,7 @@ public:
         if (!serverReachable()) {
             out = "{\"error\":\"device_offline\",\"offline\":true}"; return 503;
         }
+        DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
         // Uses its own client rather than _wcs so web UI proxy calls don't
         // compete with syncTask for the shared SSL context or the mutex.
         // lwip handles concurrent TCP connections natively.
