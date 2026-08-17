@@ -194,15 +194,16 @@ public:
     }
 
     String nowIso() {
-        struct tm t;
-        if (!getLocalTime(&t, 100)) {
+        // Pre-sync marker ("~123ms") is relied on downstream — sd_manager.h
+        // skips events/photo filenames starting with '~' as not-yet-real
+        // timestamps, so this guard has to stay even though the formatting
+        // below changed.
+        if (!isNtpSynced()) {
             char buf[24]; snprintf(buf, sizeof(buf), "~%lums", millis()); return buf;
         }
-        // getLocalTime() returns local (TZ-adjusted) time, not UTC — append
-        // the real offset (%z) instead of a literal "Z", otherwise the
-        // backend stores local time labelled as UTC and every timestamp
-        // ends up skewed by the TZ offset once converted back for display.
-        char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &t);
+        time_t now; time(&now);
+        struct tm t; gmtime_r(&now, &t);
+        char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
         return buf;
     }
 

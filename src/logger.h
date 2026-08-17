@@ -24,18 +24,20 @@ private:
     }
 
     String timestamp() {
-        struct tm t;
-        if (!getLocalTime(&t, 50)) {
+        // Logger can't reach ApiClient.isNtpSynced() (api_client.h includes
+        // this header, not the other way round), so the pre-sync guard uses
+        // the same epoch sanity threshold as ApiClient::setTimeFromEpoch().
+        // The "~123ms" marker it produces is relied on downstream (frontend
+        // fmtTs() in common.js, sd_manager.h's unsynced-event filtering).
+        time_t now; time(&now);
+        if (now < 1700000000L) {
             char buf[20];
             snprintf(buf, sizeof(buf), "~%lums", millis());
             return String(buf);
         }
-        // getLocalTime() returns local (TZ-adjusted) time, not UTC — use the
-        // real offset (%z), not a literal "Z", or every log timestamp reads
-        // 4h ahead once something (dashboard, browser) converts it back
-        // assuming it really was UTC. Same bug/fix as ApiClient::nowIso().
+        struct tm t; gmtime_r(&now, &t);
         char buf[32];
-        strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", &t);
+        strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
         return String(buf);
     }
 
