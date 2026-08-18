@@ -14,7 +14,7 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
-#define FIRMWARE_VERSION "0.5.1"
+#define FIRMWARE_VERSION "0.5.2"
 
 // ── VSPI — PN532 ─────────────────────────────────────────────────────────────
 #define PIN_VSPI_SCK   18
@@ -42,10 +42,10 @@
 
 // ── Status LEDs ──────────────────────────────────────────────────────────────
 // Semantic roles — colours are fixed by hardware wiring:
-#define PIN_SERVER_LED  27   // yellow — on while unsynced events are pending
+#define PIN_SERVER_LED  27   // yellow — blinks when a sync attempt failed (server unreachable)
 #define PIN_READER_LED  14   // green  — flashes on granted tap (2×); 3rd flash if photo saved
 #define PIN_SD_LED      13   // red    — solid on hardware failure; 200ms flash on denied tap
-#define PIN_CAM_LED     12   // green  — heartbeat: 150ms blink every 2s while system is healthy
+#define PIN_CAM_LED     12   // green  — power LED, always on
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
 // VN/VP (GPIO39/36) are input-only, no internal pull resistor — external

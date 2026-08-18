@@ -1,5 +1,5 @@
 /**
- * InOut Firmware v0.5.1
+ * InOut Firmware v0.5.2
  * ESP32-WROOM32 · 2x PN532 · SD card · Relay · Buzzer · LEDs · LCD 16x2
  *
  * Single VSPI bus (SCK=18 MISO=19 MOSI=23) shared by PN532 readers + SD card.
@@ -44,9 +44,9 @@ bool          _buzzerMuted      = false;
 volatile bool _otaInProgress    = false;
 volatile bool _camOtaInProgress = false;
 volatile bool _systemError      = false;  // SD missing or both NFC readers dead → red solid
-volatile bool _serverWarning    = false;  // unsynced events pending → yellow solid
-unsigned long _hbLast           = 0;      // heartbeat blink state
-bool          _hbOn             = false;
+volatile bool _serverWarning    = false;  // last sync failed → yellow blink
+unsigned long _warnLast         = 0;      // warning blink state
+bool          _warnOn           = false;
 
 TaskHandle_t hSync = nullptr;
 
@@ -100,7 +100,6 @@ void handleTap(const String& uid, CardDirection dir) {
             digitalWrite(PIN_READER_LED, HIGH); delay(150);
             digitalWrite(PIN_READER_LED, LOW);
         }
-        _serverWarning = true;  // event queued; cleared by syncTask after upload
     } else {
         feedbackDenied();
         // Brief red flash on denied — skip if the error LED is already solid
@@ -273,7 +272,6 @@ void syncTask(void*) {
         Logger.log(LOG_WARN, "SYNC", "Server unreachable — working locally");
         Lcd.showNotice(" Server offline", " Working locally", 5000);
     }
-    _serverWarning = SdManager.unsyncedCount() > 0;
     // Adaptive heap guard: starts at 55 KB, lowers by 2 KB every 5 consecutive
     // cycles where the observed floor stays >10 KB above the guard, down to
     // 45 KB minimum. Resets the counter any time the floor gets close.
@@ -287,17 +285,20 @@ void syncTask(void*) {
         uint32_t maxAlloc = ESP.getMaxAllocHeap();
         heapFloor = min(heapFloor, maxAlloc);
 
-        // Drain all pending events in batches (each with its photo if one
-        // exists). Loop until the queue is empty — clears a backlog in one
-        // pass instead of many 30s rounds. Cap at 100 to guard against a
-        // corrupt log; markAllSynced() drops bad-timestamp events.
+        // Drain all pending events in batches. Track whether any attempt was
+        // rejected by the server (syncEvents < 0) so the warning LED can
+        // distinguish a real failure from a heap-guard pause.
+        bool syncFailed = false;
         for (int i = 0; i < 100 && SdManager.unsyncedCount() > 0; i++) {
             if (ESP.getMaxAllocHeap() < heapGuard) {
                 Logger.logf(LOG_WARN, "SYNC", "Low heap (%u B) — deferring remaining events", ESP.getMaxAllocHeap());
                 break;
             }
-            if (ApiClient.syncEvents() <= 0) break;
+            int r = ApiClient.syncEvents();
+            if (r < 0) { syncFailed = true; break; }
+            if (r == 0) break;
         }
+        _serverWarning = syncFailed;
 
         // Once the queue is fully drained, reset the guard back to 55 KB so
         // the next backlog starts fresh and adapts again from a safe baseline.
@@ -322,7 +323,6 @@ void syncTask(void*) {
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
         Logger.trimLog();
-        _serverWarning = SdManager.unsyncedCount() > 0;
         if (ESP.getMaxAllocHeap() >= 65000) ApiClient.sendHeartbeat();
         if (ApiClient.pendingOtaUrl.length() > 0) {
             String url = ApiClient.pendingOtaUrl;
@@ -352,6 +352,7 @@ void setup() {
     for (int p : {PIN_SERVER_LED, PIN_READER_LED, PIN_SD_LED, PIN_CAM_LED}) {
         pinMode(p, OUTPUT); digitalWrite(p, LOW);
     }
+    digitalWrite(PIN_CAM_LED, HIGH);  // power LED — always on
     // External pull-ups on VN/VP — plain INPUT (these pins have no internal pulls).
     pinMode(PIN_BTN_RESET, INPUT);
     pinMode(PIN_BTN_FORGET, INPUT);
@@ -489,21 +490,20 @@ void loop() {
     }
 
     // ── Status LEDs ───────────────────────────────────────────────────────────
-    // Green heartbeat (GPIO 12): 150ms blink every 2s while system is healthy.
-    // Stops when _systemError is set so red is the only signal at that point.
+    // Yellow warning (GPIO 27): blinks (300ms on / 600ms off) when the last
+    // sync attempt failed. Clears as soon as a sync cycle succeeds.
     unsigned long now = millis();
-    if (!_systemError) {
-        if (!_hbOn && now - _hbLast >= 2000) {
-            digitalWrite(PIN_CAM_LED, HIGH); _hbOn = true; _hbLast = now;
-        } else if (_hbOn && now - _hbLast >= 150) {
-            digitalWrite(PIN_CAM_LED, LOW);  _hbOn = false;
+    if (_serverWarning) {
+        if (!_warnOn && now - _warnLast >= 600) {
+            digitalWrite(PIN_SERVER_LED, HIGH); _warnOn = true; _warnLast = now;
+        } else if (_warnOn && now - _warnLast >= 300) {
+            digitalWrite(PIN_SERVER_LED, LOW);  _warnOn = false; _warnLast = now;
         }
-    } else if (_hbOn) {
-        digitalWrite(PIN_CAM_LED, LOW); _hbOn = false;
+    } else {
+        digitalWrite(PIN_SERVER_LED, LOW);
+        _warnOn   = false;
+        _warnLast = now;
     }
-
-    // Yellow warning (GPIO 27): on while there are events waiting to be uploaded.
-    digitalWrite(PIN_SERVER_LED, _serverWarning ? HIGH : LOW);
 
     // Red error (GPIO 13): solid on hardware failure.
     // Denied-tap flashes are handled in handleTap() and don't need driving here.
