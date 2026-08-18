@@ -13,9 +13,8 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
-#include <atomic>
 
-#define FIRMWARE_VERSION "0.5.0"
+#define FIRMWARE_VERSION "0.5.1"
 
 // ── VSPI — PN532 ─────────────────────────────────────────────────────────────
 #define PIN_VSPI_SCK   18
@@ -42,38 +41,11 @@
 #define DEFAULT_SERVER  ""
 
 // ── Status LEDs ──────────────────────────────────────────────────────────────
-#define PIN_SERVER_LED  27   // lit while talking to the server (sync/heartbeat/proxy/OTA)
-#define PIN_READER_LED  14   // lit while an NFC reader is being used; blinks once at boot if both pass self-test
-#define PIN_SD_LED      13   // lit while the SD card is being read or written
-#define PIN_CAM_LED     12   // lit while a photo capture is in progress
-
-// Simple RAII status LED — HIGH for the guard's lifetime, LOW after. Only
-// safe for call sites that can't run concurrently/nested with themselves
-// (READER_LED and CAM_LED are only ever touched from the single main loop).
-struct StatusLedGuard {
-    int pin;
-    StatusLedGuard(int p) : pin(p) { digitalWrite(pin, HIGH); }
-    ~StatusLedGuard() { digitalWrite(pin, LOW); }
-};
-
-// Depth-counted RAII status LED for pins whose "in use" state can be entered
-// concurrently or re-entrantly — e.g. ApiClient's HTTP methods can run at the
-// same time from syncTask and serialTask, and SdIoLock/SdManagerLock nest.
-// The LED only turns off once every concurrent/nested holder has released it.
-struct DepthLedGuard {
-    DepthLedGuard(int pin, std::atomic<int>& depth) : _pin(pin), _depth(depth) {
-        if (_depth.fetch_add(1) == 0) digitalWrite(_pin, HIGH);
-    }
-    ~DepthLedGuard() {
-        if (_depth.fetch_sub(1) == 1) digitalWrite(_pin, LOW);
-    }
-private:
-    int _pin;
-    std::atomic<int>& _depth;
-};
-
-static std::atomic<int> _serverLedDepth{0};
-static std::atomic<int> _sdLedDepth{0};
+// Semantic roles — colours are fixed by hardware wiring:
+#define PIN_SERVER_LED  27   // yellow — on while unsynced events are pending
+#define PIN_READER_LED  14   // green  — flashes on granted tap (2×); 3rd flash if photo saved
+#define PIN_SD_LED      13   // red    — solid on hardware failure; 200ms flash on denied tap
+#define PIN_CAM_LED     12   // green  — heartbeat: 150ms blink every 2s while system is healthy
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
 // VN/VP (GPIO39/36) are input-only, no internal pull resistor — external

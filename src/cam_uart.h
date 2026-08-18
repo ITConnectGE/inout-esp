@@ -158,7 +158,6 @@ public:
     // the photo filename matches and can be correlated during batch sync.
     bool capture(const String& uid, const String& happenedAt = "") {
         if (!_ready) return false;
-        StatusLedGuard _camLed(PIN_CAM_LED);
 
         // Acquired BEFORE the CAM is even told to start — the CAM streams
         // bytes unconditionally the moment it's ready, with no flow control

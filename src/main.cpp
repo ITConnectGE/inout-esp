@@ -1,5 +1,5 @@
 /**
- * InOut Firmware v0.4.3
+ * InOut Firmware v0.5.1
  * ESP32-WROOM32 · 2x PN532 · SD card · Relay · Buzzer · LEDs · LCD 16x2
  *
  * Single VSPI bus (SCK=18 MISO=19 MOSI=23) shared by PN532 readers + SD card.
@@ -43,6 +43,10 @@ bool          _lcdFound         = false;
 bool          _buzzerMuted      = false;
 volatile bool _otaInProgress    = false;
 volatile bool _camOtaInProgress = false;
+volatile bool _systemError      = false;  // SD missing or both NFC readers dead → red solid
+volatile bool _serverWarning    = false;  // unsynced events pending → yellow solid
+unsigned long _hbLast           = 0;      // heartbeat blink state
+bool          _hbOn             = false;
 
 TaskHandle_t hSync = nullptr;
 
@@ -72,25 +76,40 @@ void feedbackBoot() {
 }
 
 // ── Card tap ──────────────────────────────────────────────────────────────────
-// READER_LED brackets the whole function (both the registration branch and
-// the normal grant/deny branch) — the reader is "in use" for either.
 void handleTap(const String& uid, CardDirection dir) {
-    digitalWrite(PIN_READER_LED, HIGH);
     if (hasPendingTap()) {
         onRegistrationTap(uid);
         feedbackRegister();
         Lcd.showTap(true, "Card registered!");
-        digitalWrite(PIN_READER_LED, LOW);
         return;
     }
     ApiResponse r = ApiClient.processCard(uid, dir);
-    // For toggle mode the device can't determine direction locally — leave blank on LCD.
     String dirStr = (Config.directionMode == "toggle") ? "" : (dir == DIR_IN ? "in" : "out");
     Lcd.showTap(r.granted, r.name, dirStr);
-    if (r.granted) { feedbackGranted(); Relay.open(r.openMs); CamUart.capture(uid, r.happenedAt); }
-    else           { feedbackDenied(); }
+    if (r.granted) {
+        feedbackGranted();
+        Relay.open(r.openMs);
+        // 2 green blinks = tap granted; 3rd blink if photo was also saved
+        for (int i = 0; i < 2; i++) {
+            digitalWrite(PIN_READER_LED, HIGH); delay(150);
+            digitalWrite(PIN_READER_LED, LOW);  delay(100);
+        }
+        bool photoOk = CamUart.capture(uid, r.happenedAt);
+        if (photoOk) {
+            delay(80);
+            digitalWrite(PIN_READER_LED, HIGH); delay(150);
+            digitalWrite(PIN_READER_LED, LOW);
+        }
+        _serverWarning = true;  // event queued; cleared by syncTask after upload
+    } else {
+        feedbackDenied();
+        // Brief red flash on denied — skip if the error LED is already solid
+        if (!_systemError) {
+            digitalWrite(PIN_SD_LED, HIGH); delay(200);
+            digitalWrite(PIN_SD_LED, LOW);
+        }
+    }
     delay(40);
-    digitalWrite(PIN_READER_LED, LOW);
 }
 
 // ── Buttons ───────────────────────────────────────────────────────────────────
@@ -163,7 +182,6 @@ void performOta(const String& url, const String& version) {
         return;
     }
     _otaInProgress = true;
-    DepthLedGuard _srvLed(PIN_SERVER_LED, _serverLedDepth);
     Logger.logf(LOG_INFO, "OTA", "Starting update v%s", version.c_str());
     Lcd.showOta(version);
 
@@ -255,6 +273,7 @@ void syncTask(void*) {
         Logger.log(LOG_WARN, "SYNC", "Server unreachable — working locally");
         Lcd.showNotice(" Server offline", " Working locally", 5000);
     }
+    _serverWarning = SdManager.unsyncedCount() > 0;
     // Adaptive heap guard: starts at 55 KB, lowers by 2 KB every 5 consecutive
     // cycles where the observed floor stays >10 KB above the guard, down to
     // 45 KB minimum. Resets the counter any time the floor gets close.
@@ -303,6 +322,7 @@ void syncTask(void*) {
         if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
         Logger.trimLog();
+        _serverWarning = SdManager.unsyncedCount() > 0;
         if (ESP.getMaxAllocHeap() >= 65000) ApiClient.sendHeartbeat();
         if (ApiClient.pendingOtaUrl.length() > 0) {
             String url = ApiClient.pendingOtaUrl;
@@ -446,10 +466,8 @@ void setup() {
     bool outOk = NfcReader.isOk(READER_OUT);
     if (!inOk)  Logger.log(LOG_ERROR, "NFC", "IN reader not found", "CS=GPIO" + String(Config.csPin_IN));
     if (!outOk) Logger.log(LOG_ERROR, "NFC", "OUT reader not found", "CS=GPIO" + String(Config.csPin_OUT));
-    // Both readers passed self-test — confirm with a READER_LED blink.
-    if (inOk && outOk) {
-        digitalWrite(PIN_READER_LED, HIGH); delay(300); digitalWrite(PIN_READER_LED, LOW);
-    }
+    // Red solid if SD is missing or both readers are dead — device can't function
+    _systemError = !sdOk || (!inOk && !outOk);
     Logger.logf(LOG_INFO, "SYS", "Ready  IN:%s OUT:%s  SD:%s  LCD:%s",
                 inOk                    ? "OK" : "FAIL",
                 outOk                   ? "OK" : "FAIL",
@@ -469,5 +487,27 @@ void loop() {
         if (NfcReader.poll(READER_IN,  uid)) handleTap(uid, DIR_IN);
         if (NfcReader.poll(READER_OUT, uid)) handleTap(uid, DIR_OUT);
     }
+
+    // ── Status LEDs ───────────────────────────────────────────────────────────
+    // Green heartbeat (GPIO 12): 150ms blink every 2s while system is healthy.
+    // Stops when _systemError is set so red is the only signal at that point.
+    unsigned long now = millis();
+    if (!_systemError) {
+        if (!_hbOn && now - _hbLast >= 2000) {
+            digitalWrite(PIN_CAM_LED, HIGH); _hbOn = true; _hbLast = now;
+        } else if (_hbOn && now - _hbLast >= 150) {
+            digitalWrite(PIN_CAM_LED, LOW);  _hbOn = false;
+        }
+    } else if (_hbOn) {
+        digitalWrite(PIN_CAM_LED, LOW); _hbOn = false;
+    }
+
+    // Yellow warning (GPIO 27): on while there are events waiting to be uploaded.
+    digitalWrite(PIN_SERVER_LED, _serverWarning ? HIGH : LOW);
+
+    // Red error (GPIO 13): solid on hardware failure.
+    // Denied-tap flashes are handled in handleTap() and don't need driving here.
+    if (_systemError) digitalWrite(PIN_SD_LED, HIGH);
+
     delay(30);
 }
