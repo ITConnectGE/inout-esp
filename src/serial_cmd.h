@@ -11,6 +11,7 @@
  *   config
  *   restart
  *   open                                 Trigger relay (hardware test)
+ *   locale [on|off|status]               Start/stop the local admin web panel (off at boot)
  *   status <null|nfc|all>                Device status, NFC reader check, or both
  *   sync                                 Force whitelist+events+employees sync now
  *   set server <url>
@@ -68,6 +69,7 @@ private:
         Serial.println("  config                    Dump current configuration");
         Serial.println("  restart                   Restart ESP32");
         Serial.println("  open                      Trigger relay (hardware test)");
+        Serial.println("  locale [on|off|status]    Start/stop the local admin web panel (off at boot)");
         Serial.println("  sync                      Force whitelist+events+employees sync now");
         Serial.println("  set <server|token|tz> <value>     Set backend URL, device token, or IANA timezone");
         Serial.println("  set wifi <ssid> <password>        Save WiFi credentials and restart");
@@ -106,7 +108,10 @@ private:
             Serial.printf("  used=%llu MB / %llu MB", SdManager.usedMB(), SdManager.totalMB());
         Serial.println();
         Serial.printf("  Unsynced : %d events\n", SdManager.unsyncedCount());
-        Serial.printf("  Free heap: %u bytes\n", ESP.getFreeHeap());
+        Serial.printf("  Panel    : %s\n", WebServerManager.isRunning()
+                      ? "running  (locale off to free heap)" : "stopped  (locale to start)");
+        Serial.printf("  Free heap: %u bytes   largest block: %u bytes\n",
+                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         struct tm t;
         if (getLocalTime(&t, 100)) {
             // Local time, real offset — not UTC, so no literal "Z" (see
@@ -167,6 +172,64 @@ private:
     void doOpen() {
         Relay.open(Config.relayMs);
         Serial.printf("[CMD] Relay opened for %dms\n", Config.relayMs);
+    }
+
+    // ── locale — the local admin web panel ────────────────────────────────────
+    // Off at boot. The actual allocate/free runs on the main loop (this runs
+    // on serialTask), so we request the change and then wait for the main loop
+    // to pick it up — up to ~2 s, since a tap in progress can block loop().
+    void doLocale(const String& arg) {
+        bool wantOn;
+        if      (arg.isEmpty() || arg == "on"  || arg == "start") wantOn = true;
+        else if (arg == "off"  || arg == "stop")                  wantOn = false;
+        else if (arg == "status") {
+            if (WebServerManager.isRunning())
+                Serial.printf("[CMD] Admin panel: RUNNING at http://%s  (~%u B heap)\n",
+                              WiFi.localIP().toString().c_str(), WebServerManager.heapCost());
+            else
+                Serial.println("[CMD] Admin panel: stopped  (type 'locale' to start)");
+            Serial.printf("[CMD] Free heap: %u B   largest block: %u B\n",
+                          ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+            return;
+        } else {
+            Serial.println("[CMD] Usage: locale [on|off|status]");
+            return;
+        }
+
+        if (wantOn && WebServerManager.isRunning()) {
+            Serial.printf("[CMD] Admin panel already running at http://%s\n",
+                          WiFi.localIP().toString().c_str());
+            return;
+        }
+        if (!wantOn && !WebServerManager.isRunning()) {
+            Serial.println("[CMD] Admin panel already stopped.");
+            return;
+        }
+        if (wantOn && WiFi.status() != WL_CONNECTED) {
+            Serial.println("[CMD] WiFi not connected — panel would be unreachable. Aborting.");
+            return;
+        }
+
+        uint32_t heapBefore = ESP.getFreeHeap();
+        Serial.printf("[CMD] %s admin panel...\n", wantOn ? "Starting" : "Stopping");
+        if (wantOn) WebServerManager.requestStart();
+        else        WebServerManager.requestStop();
+
+        // Main loop ticks every ~30 ms; allow generously for a tap or OTA.
+        for (int i = 0; i < 200 && WebServerManager.isRunning() != wantOn; i++) delay(10);
+
+        if (WebServerManager.isRunning() != wantOn) {
+            Serial.println("[CMD] Request queued — main loop is busy, it will apply shortly.");
+            return;
+        }
+        int delta = (int)ESP.getFreeHeap() - (int)heapBefore;
+        if (wantOn)
+            Serial.printf("[CMD] Admin panel started: http://%s   heap %u -> %u B (%+d)\n",
+                          WiFi.localIP().toString().c_str(),
+                          heapBefore, ESP.getFreeHeap(), delta);
+        else
+            Serial.printf("[CMD] Admin panel stopped.   heap %u -> %u B (%+d)\n",
+                          heapBefore, ESP.getFreeHeap(), delta);
     }
 
     void doNfcStatus() {
@@ -268,6 +331,13 @@ private:
 
         } else if (lo == "open") {
             doOpen();
+
+        } else if (lo == "locale") {
+            doLocale("");
+
+        } else if (lo.startsWith("locale ")) {
+            String a = cmd.substring(7); a.trim(); a.toLowerCase();
+            doLocale(a);
 
         } else if (lo == "sync") {
             doSync();

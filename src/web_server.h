@@ -1,6 +1,18 @@
 #pragma once
 /**
- * web_server.h — HTTP :80
+ * web_server.h — HTTP :80  (OFF BY DEFAULT)
+ *
+ * The admin panel does not run at boot. It is the largest heap consumer on
+ * the device, and nothing else depends on it — card reads, SD logging, photo
+ * capture and server sync all work with it stopped. Start it on demand from
+ * the serial console:
+ *
+ *   locale            start the panel
+ *   locale off        stop it and release the heap
+ *   locale status     report state + heap
+ *
+ * Starting allocates the WebServer, its route handlers and the listening
+ * socket; stopping destroys all of them and clears any open sessions.
  *
  * All routes (except /api/auth/login) require valid session token.
  * Token passed as header: X-Session-Token: <token>
@@ -39,7 +51,6 @@
 
 #include <Arduino.h>
 #include <WebServer.h>
-#include <SPIFFS.h>
 #include <ArduinoJson.h>
 #include <SD.h>
 #include <WiFiManager.h>
@@ -53,7 +64,12 @@
 #include "logger.h"
 
 
-WebServer _server(80);
+// Allocated on demand by the serial `locale` command — null while the admin
+// panel is off, which is the default on every boot. Nothing in the firmware
+// depends on the panel running, so the WebServer object, its ~28 route
+// handler allocations, the listening socket and every per-connection lwIP
+// buffer stay unallocated until someone explicitly asks for the panel.
+static WebServer* _server = nullptr;
 extern bool _lcdFound;
 extern TaskHandle_t hSync;
 
@@ -87,29 +103,38 @@ bool hasPendingTap() {
 
 struct WebServerClass {
 private:
+    // Requested vs. actual panel state. requestStart()/requestStop() only set
+    // _wantRunning (safe from the serial task); loop() does the actual
+    // new/delete on the main task, so the WebServer can never be destroyed
+    // while handleClient() is running on it.
+    volatile bool _wantRunning = false;
+    bool          _running     = false;
+    uint32_t      _heapAtStart = 0;
+    uint32_t      _lastStuckRestart = 0;
+
     // ── Auth helpers ──────────────────────────────────────────────────────────
     String getToken() {
-        if (_server.hasHeader("X-Session-Token"))
-            return _server.header("X-Session-Token");
-        if (_server.hasArg("token"))
-            return _server.arg("token");
+        if (_server->hasHeader("X-Session-Token"))
+            return _server->header("X-Session-Token");
+        if (_server->hasArg("token"))
+            return _server->arg("token");
         return "";
     }
 
     bool requireAuth(Session& session) {
         String token = getToken();
         if (token.length() == 0 || !AuthManager.validate(token, session)) {
-            cors(); _server.send(401, "application/json",
+            cors(); _server->send(401, "application/json",
                 "{\"error\":\"unauthorized\",\"code\":401}");
             return false;
         }
         // Block all endpoints except password-change, /me, and logout when flag is set
-        const String& uri = _server.uri();
+        const String& uri = _server->uri();
         if (session.mustChange &&
             uri != "/api/auth/change-password" &&
             uri != "/api/auth/me" &&
             uri != "/api/auth/logout") {
-            cors(); _server.send(403, "application/json",
+            cors(); _server->send(403, "application/json",
                 "{\"error\":\"must_change_password\",\"code\":403}");
             return false;
         }
@@ -120,7 +145,7 @@ private:
         Session s;
         if (!requireAuth(s)) return false;
         if (s.role != "super_admin") {
-            cors(); _server.send(403, "application/json",
+            cors(); _server->send(403, "application/json",
                 "{\"error\":\"forbidden\",\"code\":403}");
             return false;
         }
@@ -128,9 +153,9 @@ private:
     }
 
     void cors() {
-        _server.sendHeader("Access-Control-Allow-Origin",  "*");
-        _server.sendHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-        _server.sendHeader("Access-Control-Allow-Headers",
+        _server->sendHeader("Access-Control-Allow-Origin",  "*");
+        _server->sendHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+        _server->sendHeader("Access-Control-Allow-Headers",
                            "Content-Type,Authorization,X-Session-Token");
         // Force the connection closed after every response. WebServer keeps
         // TCP sockets open for HTTP/1.1 keep-alive by default, and the small
@@ -138,18 +163,18 @@ private:
         // idle persistent connections open across the admin SPA's polling
         // timers — once full, new accepts fail and pending writes hang with
         // EAGAIN, wedging the whole HTTP stack until power-cycled.
-        _server.sendHeader("Connection", "close");
+        _server->sendHeader("Connection", "close");
     }
 
     void jsend(int code, const String& body) {
-        cors(); _server.send(code, "application/json", body);
+        cors(); _server->send(code, "application/json", body);
     }
 
     // ── POST /api/auth/login ──────────────────────────────────────────────────
     void handleLogin() {
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
 
         String username = doc["username"] | "";
         String password = doc["password"] | "";
@@ -188,9 +213,9 @@ private:
     void handleChangePassword() {
         Session s;
         if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
 
         String oldPass = doc["old_password"] | "";
         String newPass = doc["new_password"] | "";
@@ -213,9 +238,9 @@ private:
     // ── POST /api/admins ──────────────────────────────────────────────────────
     void handleCreateAdmin() {
         if (!requireSuperAdmin()) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
 
         String username = doc["username"] | "";
         String password = doc["password"] | "";
@@ -234,9 +259,9 @@ private:
     // ── DELETE /api/admins ────────────────────────────────────────────────────
     void handleDeleteAdmin() {
         if (!requireSuperAdmin()) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String username = doc["username"] | "";
         if (AuthManager.deleteAdmin(username))
             jsend(200, "{\"ok\":true}");
@@ -247,9 +272,9 @@ private:
     // ── POST /api/admins/reset-password ───────────────────────────────────────
     void handleResetAdminPassword() {
         if (!requireSuperAdmin()) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String username = doc["username"] | "";
         String newPass  = doc["new_password"] | "";
         if (newPass.length() < 8) { jsend(400,"{\"error\":\"Password min 8 chars\"}"); return; }
@@ -297,9 +322,9 @@ private:
     // ── POST /api/config (super admin only) ───────────────────────────────────
     void handleConfig() {
         if (!requireSuperAdmin()) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         Config.applyFromJson(doc.as<JsonObject>());
         jsend(200, "{\"ok\":true}");
     }
@@ -313,7 +338,7 @@ private:
     // ── POST /api/reset (super admin only) ────────────────────────────────────
     void handleReset() {
         if (!requireSuperAdmin()) return;
-        String type = _server.hasArg("type") ? _server.arg("type") : "wifi";
+        String type = _server->hasArg("type") ? _server->arg("type") : "wifi";
         jsend(200, "{\"ok\":true}");
         delay(500); // let HTTP response flush before we start touching hardware
         performReset(type == "all");
@@ -322,9 +347,9 @@ private:
     // ── POST /api/employees ───────────────────────────────────────────────────
     void handleCreateEmployee() {
         Session s; if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
 
         String firstName = doc["first_name"] | "";
         String lastName  = doc["last_name"]  | "";
@@ -359,9 +384,9 @@ private:
     // ── POST /api/employees/update ──────────────────────────────────────────────
     void handleUpdateEmployee() {
         Session s; if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String localId = doc["local_id"] | "";
         if (localId.length() == 0) { jsend(400,"{\"error\":\"local_id required\"}"); return; }
         if (SdManager.updateEmployee(localId, doc.as<JsonObject>()))
@@ -373,9 +398,9 @@ private:
     // ── POST /api/employees/delete ────────────────────────────────────────────
     void handleDeleteEmployee() {
         Session s; if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String localId = doc["local_id"] | "";
         if (localId.length() == 0) { jsend(400,"{\"error\":\"local_id required\"}"); return; }
         SdManager.deletePhotosForEmployee(localId);
@@ -388,9 +413,9 @@ private:
     // ── POST /api/photos/delete ───────────────────────────────────────────────
     void handleDeletePhoto() {
         Session s; if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String filename = doc["file"] | "";
         // Prevent path traversal
         if (filename.length() == 0 || filename.indexOf('/') >= 0 || filename.indexOf("..") >= 0) {
@@ -407,9 +432,9 @@ private:
     // ── POST /api/employees/card ──────────────────────────────────────────────
     void handleAssignCard() {
         Session s; if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String localId = doc["local_id"] | "";
         if (localId.length() == 0) { jsend(400,"{\"error\":\"local_id required\"}"); return; }
         // "__scan__" = scan-only mode: capture UID but don't assign to employee yet
@@ -423,9 +448,9 @@ private:
     // Used when UID is already known (scanned during step 1 of add-employee flow)
     void handleDirectAssignCard() {
         Session s; if (!requireAuth(s)) return;
-        if (!_server.hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
+        if (!_server->hasArg("plain")) { jsend(400,"{\"error\":\"no body\"}"); return; }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
+        if (deserializeJson(doc, _server->arg("plain"))) { jsend(400,"{\"error\":\"bad json\"}"); return; }
         String localId = doc["local_id"] | "";
         String uid     = doc["uid"]      | "";
         uid.toUpperCase();
@@ -462,9 +487,9 @@ private:
     void handleGetLogs() {
         Session s; if (!requireAuth(s)) return;
         int limit = 200;
-        if (_server.hasArg("limit"))
-            limit = (int)min(_server.arg("limit").toInt(), 1000L);
-        String lvl = _server.hasArg("level") ? _server.arg("level") : "";
+        if (_server->hasArg("limit"))
+            limit = (int)min(_server->arg("limit").toInt(), 1000L);
+        String lvl = _server->hasArg("level") ? _server->arg("level") : "";
         // Normalise level filter
         lvl.toUpperCase();
         if (lvl != "INFO" && lvl != "WARN" && lvl != "ERROR") lvl = "";
@@ -476,7 +501,7 @@ private:
         Session s;
         if (!requireAuth(s)) return;
         if (s.role != "super_admin") {
-            cors(); _server.send(403, "application/json", "{\"error\":\"forbidden\"}"); return;
+            cors(); _server->send(403, "application/json", "{\"error\":\"forbidden\"}"); return;
         }
         Logger.clearLog();
         Logger.log(LOG_INFO, "WEB", "Device log cleared", "by=" + s.username);
@@ -501,19 +526,19 @@ private:
         Session s;
         if (!requireAuth(s)) return;
         if (s.role != "super_admin") {
-            cors(); _server.send(403, "application/json", "{\"error\":\"forbidden\"}"); return;
+            cors(); _server->send(403, "application/json", "{\"error\":\"forbidden\"}"); return;
         }
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain"))) {
-            cors(); _server.send(400, "application/json", "{\"error\":\"invalid json\"}"); return;
+        if (deserializeJson(doc, _server->arg("plain"))) {
+            cors(); _server->send(400, "application/json", "{\"error\":\"invalid json\"}"); return;
         }
         const char* ts = doc["ts"];
         if (!ts) {
-            cors(); _server.send(400, "application/json", "{\"error\":\"ts required\"}"); return;
+            cors(); _server->send(400, "application/json", "{\"error\":\"ts required\"}"); return;
         }
         int y, mo, d, h, mi, s2;
         if (sscanf(ts, "%4d-%2d-%2dT%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &s2) < 5) {
-            cors(); _server.send(400, "application/json", "{\"error\":\"use YYYY-MM-DDTHH:MM:SS\"}"); return;
+            cors(); _server->send(400, "application/json", "{\"error\":\"use YYYY-MM-DDTHH:MM:SS\"}"); return;
         }
         struct tm t = {};
         t.tm_year = y - 1900; t.tm_mon = mo - 1; t.tm_mday = d;
@@ -597,21 +622,21 @@ private:
         // time holding the SD bus and less overlap with the background
         // sync task's TLS handshake, on top of the bandwidth saving.
         bool wantsGzip = SdManager.isMounted()
-            && _server.hasHeader("Accept-Encoding")
-            && _server.header("Accept-Encoding").indexOf("gzip") >= 0
+            && _server->hasHeader("Accept-Encoding")
+            && _server->header("Accept-Encoding").indexOf("gzip") >= 0
             && SD.exists("/www/index.html.gz");
         if (wantsGzip) {
             File f = SD.open("/www/index.html.gz", FILE_READ);
             if (f && f.size() > 0) {
                 Serial.printf("[Web] Serving / (gzip) from SD (%u bytes)\n", f.size());
-                _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-                _server.sendHeader("Pragma", "no-cache");
-                _server.sendHeader("Connection", "close");
+                _server->sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+                _server->sendHeader("Pragma", "no-cache");
+                _server->sendHeader("Connection", "close");
                 // streamFile() auto-adds Content-Encoding: gzip itself when
                 // the filename ends in .gz — adding it here too duplicates
                 // the header ("gzip, gzip"), which Firefox correctly refuses
                 // to decode (Chrome silently tolerates the duplicate).
-                _server.streamFile(f, "text/html");
+                _server->streamFile(f, "text/html");
                 f.close(); return;
             }
             if (f) f.close();
@@ -621,10 +646,10 @@ private:
             File f = SD.open("/www/index.html", FILE_READ);
             if (f && f.size() > 0) {
                 Serial.printf("[Web] Serving / from SD (%u bytes)\n", f.size());
-                _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-                _server.sendHeader("Pragma", "no-cache");
-                _server.sendHeader("Connection", "close");
-                _server.streamFile(f, "text/html");
+                _server->sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+                _server->sendHeader("Pragma", "no-cache");
+                _server->sendHeader("Connection", "close");
+                _server->streamFile(f, "text/html");
                 f.close(); return;
             }
             if (f) f.close();
@@ -634,7 +659,7 @@ private:
                           SdManager.isMounted(),
                           SdManager.isMounted() ? SD.exists("/www/index.html") : 0);
         }
-        _server.send(503, "text/plain", "SD card not mounted — place index.html at /www/index.html");
+        _server->send(503, "text/plain", "SD card not mounted — place index.html at /www/index.html");
     }
 
     // ── GET /api/local/employees ──────────────────────────────────────────────
@@ -645,14 +670,14 @@ private:
         }
         File f = SD.open(EMPLOYEES_FILE, FILE_READ);
         if (!f) { jsend(500,"{\"error\":\"read_failed\"}"); return; }
-        cors(); _server.streamFile(f,"application/json"); f.close();
+        cors(); _server->streamFile(f,"application/json"); f.close();
     }
 
     // ── GET /api/local/events ─────────────────────────────────────────────────
     void handleLocalEvents() {
         Session s; if (!requireAuth(s)) return;
-        int limit = _server.hasArg("limit")
-            ? (int)min(_server.arg("limit").toInt(), 500L) : 100;
+        int limit = _server->hasArg("limit")
+            ? (int)min(_server->arg("limit").toInt(), 500L) : 100;
         if (!SdManager.isMounted() || !SD.exists(EVENTS_LOG)) {
             jsend(200,"{\"events\":[],\"offline\":true}"); return;
         }
@@ -678,16 +703,16 @@ private:
     // ── ANY /api/proxy/* ──────────────────────────────────────────────────────
     void handleProxy() {
         Session s; if (!requireAuth(s)) return;
-        String path = _server.uri().substring(10);
-        String body = _server.hasArg("plain") ? _server.arg("plain") : "";
+        String path = _server->uri().substring(10);
+        String body = _server->hasArg("plain") ? _server->arg("plain") : "";
         bool first = true;
-        for (int i=0; i<_server.args(); i++) {
-            if (_server.argName(i)=="plain"||_server.argName(i)=="token") continue;
+        for (int i=0; i<_server->args(); i++) {
+            if (_server->argName(i)=="plain"||_server->argName(i)=="token") continue;
             path += (first?"?":"&"); first=false;
-            path += _server.argName(i) + "=" + _server.arg(i);
+            path += _server->argName(i) + "=" + _server->arg(i);
         }
         String method;
-        switch (_server.method()) {
+        switch (_server->method()) {
             case HTTP_GET:    method="GET";    break;
             case HTTP_POST:   method="POST";   break;
             case HTTP_PUT:    method="PUT";    break;
@@ -730,75 +755,87 @@ public:
         ESP.restart();
     }
 
-    void begin() {
-        const char* headers[] = {"X-Session-Token", "Accept-Encoding"};
-        _server.collectHeaders(headers, 2);
+private:
+    // Allocates the WebServer and registers every route. Only ever called
+    // from loop() (i.e. the main task) — see applyPendingState().
+    void startNow() {
+        if (_server) return;
+        uint32_t before = ESP.getFreeHeap();
+        _server = new WebServer(80);
+        if (!_server) {
+            Logger.log(LOG_ERROR, "WEB", "Out of memory — cannot start admin panel");
+            _wantRunning = false;
+            return;
+        }
 
-        // SPIFFS not used — SD card serves all web content
+        const char* headers[] = {"X-Session-Token", "Accept-Encoding"};
+        _server->collectHeaders(headers, 2);
+
+        // SD card serves all web content
 
         // Auth (no token required)
-        _server.on("/api/auth/login",           HTTP_POST, [this]{ handleLogin(); });
-        _server.on("/api/auth/logout",          HTTP_POST, [this]{ handleLogout(); });
-        _server.on("/api/auth/me",              HTTP_GET,  [this]{ handleMe(); });
-        _server.on("/api/auth/change-password", HTTP_POST, [this]{ handleChangePassword(); });
+        _server->on("/api/auth/login",           HTTP_POST, [this]{ handleLogin(); });
+        _server->on("/api/auth/logout",          HTTP_POST, [this]{ handleLogout(); });
+        _server->on("/api/auth/me",              HTTP_GET,  [this]{ handleMe(); });
+        _server->on("/api/auth/change-password", HTTP_POST, [this]{ handleChangePassword(); });
 
         // Main page
-        _server.on("/",      HTTP_GET, [this]{ handleRoot(); });
-        _server.on("/admin", HTTP_GET, [this]{ handleRoot(); });
+        _server->on("/",      HTTP_GET, [this]{ handleRoot(); });
+        _server->on("/admin", HTTP_GET, [this]{ handleRoot(); });
 
         // Protected
-        _server.on("/api/status",            HTTP_GET,    [this]{ handleStatus(); });
-        _server.on("/api/config",            HTTP_POST,   [this]{ handleConfig(); });
-        _server.on("/api/open",              HTTP_POST,   [this]{ handleOpen(); });
-        _server.on("/api/reset",             HTTP_POST,   [this]{ handleReset(); });
-        _server.on("/api/admins",            HTTP_GET,    [this]{ handleListAdmins(); });
-        _server.on("/api/admins",            HTTP_POST,   [this]{ handleCreateAdmin(); });
-        _server.on("/api/admins",            HTTP_DELETE, [this]{ handleDeleteAdmin(); });
-        _server.on("/api/admins/reset-password", HTTP_POST, [this]{ handleResetAdminPassword(); });
-        _server.on("/api/employees",         HTTP_POST,   [this]{ handleCreateEmployee(); });
-        _server.on("/api/employees/update",  HTTP_POST,   [this]{ handleUpdateEmployee(); });
-        _server.on("/api/employees/delete",  HTTP_POST,   [this]{ handleDeleteEmployee(); });
-        _server.on("/api/employees/card",        HTTP_POST,   [this]{ handleAssignCard(); });
-        _server.on("/api/employees/card/assign", HTTP_POST,   [this]{ handleDirectAssignCard(); });
-        _server.on("/api/employees/pending", HTTP_GET,    [this]{ handlePendingTap(); });
-        _server.on("/api/photos",            HTTP_GET,    [this]{ handleListPhotos(); });
-        _server.on("/api/photos/delete",     HTTP_POST,   [this]{ handleDeletePhoto(); });
-        _server.on("/api/logs",              HTTP_GET,    [this]{ handleGetLogs(); });
-        _server.on("/api/logs",              HTTP_DELETE, [this]{ handleClearLogs(); });
-        _server.on("/api/time",              HTTP_GET,    [this]{ handleGetTime(); });
-        _server.on("/api/time",              HTTP_POST,   [this]{ handleSetTime(); });
+        _server->on("/api/status",            HTTP_GET,    [this]{ handleStatus(); });
+        _server->on("/api/config",            HTTP_POST,   [this]{ handleConfig(); });
+        _server->on("/api/open",              HTTP_POST,   [this]{ handleOpen(); });
+        _server->on("/api/reset",             HTTP_POST,   [this]{ handleReset(); });
+        _server->on("/api/admins",            HTTP_GET,    [this]{ handleListAdmins(); });
+        _server->on("/api/admins",            HTTP_POST,   [this]{ handleCreateAdmin(); });
+        _server->on("/api/admins",            HTTP_DELETE, [this]{ handleDeleteAdmin(); });
+        _server->on("/api/admins/reset-password", HTTP_POST, [this]{ handleResetAdminPassword(); });
+        _server->on("/api/employees",         HTTP_POST,   [this]{ handleCreateEmployee(); });
+        _server->on("/api/employees/update",  HTTP_POST,   [this]{ handleUpdateEmployee(); });
+        _server->on("/api/employees/delete",  HTTP_POST,   [this]{ handleDeleteEmployee(); });
+        _server->on("/api/employees/card",        HTTP_POST,   [this]{ handleAssignCard(); });
+        _server->on("/api/employees/card/assign", HTTP_POST,   [this]{ handleDirectAssignCard(); });
+        _server->on("/api/employees/pending", HTTP_GET,    [this]{ handlePendingTap(); });
+        _server->on("/api/photos",            HTTP_GET,    [this]{ handleListPhotos(); });
+        _server->on("/api/photos/delete",     HTTP_POST,   [this]{ handleDeletePhoto(); });
+        _server->on("/api/logs",              HTTP_GET,    [this]{ handleGetLogs(); });
+        _server->on("/api/logs",              HTTP_DELETE, [this]{ handleClearLogs(); });
+        _server->on("/api/time",              HTTP_GET,    [this]{ handleGetTime(); });
+        _server->on("/api/time",              HTTP_POST,   [this]{ handleSetTime(); });
 
         // Routes previously in onNotFound — registered explicitly so the framework
         // finds them directly and doesn't emit [E] _handleRequest(): not found.
-        _server.on("/api/local/employees", HTTP_GET, [this]{ handleLocalEmployees(); });
-        _server.on("/api/local/events",    HTTP_GET, [this]{ handleLocalEvents(); });
-        _server.on("/api/local/status",    HTTP_GET, [this]{ handleStatus(); });
+        _server->on("/api/local/employees", HTTP_GET, [this]{ handleLocalEmployees(); });
+        _server->on("/api/local/events",    HTTP_GET, [this]{ handleLocalEvents(); });
+        _server->on("/api/local/status",    HTTP_GET, [this]{ handleStatus(); });
 
         // Suppress browser favicon / icon requests
-        _server.on("/favicon.ico",           HTTP_GET, [this]{ cors(); _server.send(204); });
-        _server.on("/apple-touch-icon.png",  HTTP_GET, [this]{ cors(); _server.send(204); });
+        _server->on("/favicon.ico",           HTTP_GET, [this]{ cors(); _server->send(204); });
+        _server->on("/apple-touch-icon.png",  HTTP_GET, [this]{ cors(); _server->send(204); });
 
-        _server.onNotFound([this]{
-            const String& uri = _server.uri();
-            if (_server.method()==HTTP_OPTIONS) { cors(); _server.send(204); return; }
+        _server->onNotFound([this]{
+            const String& uri = _server->uri();
+            if (_server->method()==HTTP_OPTIONS) { cors(); _server->send(204); return; }
             if (uri.startsWith("/api/proxy/")) { handleProxy(); return; }
             // Serve photos — auth required (token via header or ?token= query param)
             if (uri.startsWith("/photos/") && uri.length() > 8) {
                 Session ps;
                 if (!AuthManager.validate(getToken(), ps)) {
-                    cors(); _server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+                    cors(); _server->send(401, "application/json", "{\"error\":\"unauthorized\"}");
                     return;
                 }
-                if (SdManager.isMounted() && SdManager.serveFile(_server, uri)) return;
-                _server.sendHeader("Connection", "close");
-                _server.send(404, "text/plain", "Photo not found");
+                if (SdManager.isMounted() && SdManager.serveFile(*_server, uri)) return;
+                _server->sendHeader("Connection", "close");
+                _server->send(404, "text/plain", "Photo not found");
                 return;
             }
             // Serve any SD www file (JS, CSS, HTML pages, icons etc)
             if (SdManager.isMounted()) {
                 if (uri.indexOf("..") >= 0) {
-                    _server.sendHeader("Connection", "close");
-                    _server.send(400, "text/plain", "Bad Request");
+                    _server->sendHeader("Connection", "close");
+                    _server->send(400, "text/plain", "Bad Request");
                     return;
                 }
                 String sdPath = "/www" + uri;
@@ -815,44 +852,92 @@ public:
                 };
                 bool isAsset = uri.endsWith(".css") || uri.endsWith(".js");
                 // Try .gz first when the browser accepts it
-                bool wantsGzip = _server.hasHeader("Accept-Encoding")
-                    && _server.header("Accept-Encoding").indexOf("gzip") >= 0;
+                bool wantsGzip = _server->hasHeader("Accept-Encoding")
+                    && _server->header("Accept-Encoding").indexOf("gzip") >= 0;
                 if (wantsGzip && SD.exists(sdPath + ".gz")) {
                     File f = SD.open(sdPath + ".gz", FILE_READ);
                     if (f && f.size() > 0) {
-                        _server.sendHeader("Cache-Control",
+                        _server->sendHeader("Cache-Control",
                             isAsset ? "max-age=3600" : "no-cache, no-store, must-revalidate");
-                        _server.sendHeader("Connection", "close");
+                        _server->sendHeader("Connection", "close");
                         // streamFile() sets Content-Encoding: gzip automatically
                         // when f.name() ends in .gz — do not add it here too.
-                        _server.streamFile(f, mimeOf(sdPath));
+                        _server->streamFile(f, mimeOf(sdPath));
                         f.close(); return;
                     }
                     if (f) f.close();
                 }
                 // Raw file fallback (serveFile sets max-age=60 for all files)
-                if (SdManager.serveFile(_server, sdPath)) return;
+                if (SdManager.serveFile(*_server, sdPath)) return;
             }
-            _server.sendHeader("Connection", "close");
-            _server.send(404,"text/plain","Not found");
+            _server->sendHeader("Connection", "close");
+            _server->send(404,"text/plain","Not found");
         });
 
-        _server.begin();
-        Logger.log(LOG_INFO, "WEB", "Server started", "http://" + WiFi.localIP().toString());
+        _server->begin();
+        _running = true;
+        _heapAtStart = before;
+        Logger.logf(LOG_INFO, "WEB", "Admin panel started — http://%s  (cost %d B heap)",
+                    WiFi.localIP().toString().c_str(),
+                    (int)before - (int)ESP.getFreeHeap());
     }
 
+    // Closes every connection, destroys the server and releases all of its
+    // route handlers. Only ever called from loop() — see applyPendingState().
+    void stopNow() {
+        if (!_server) return;
+        uint32_t before = ESP.getFreeHeap();
+        _server->close();
+        _server->stop();
+        delete _server;          // frees the ~28 registered route handlers too
+        _server = nullptr;
+        _running = false;
+        // Sessions are only meaningful while the panel is up; dropping them
+        // frees the map and means a stopped panel can't be resumed with a
+        // token captured earlier.
+        AuthManager.clearSessions();
+        Logger.logf(LOG_INFO, "WEB", "Admin panel stopped — freed %d B heap",
+                    (int)ESP.getFreeHeap() - (int)before);
+    }
+
+    // Applies a start/stop requested from another task. Runs on the main
+    // task only, so the server can never be deleted while loop() is inside
+    // handleClient().
+    void applyPendingState() {
+        if (_wantRunning && !_running)      startNow();
+        else if (!_wantRunning && _running) stopNow();
+    }
+
+public:
+    // Safe to call from any task (serial console, web handler). The actual
+    // allocate/free happens on the next main-loop tick.
+    void requestStart() { _wantRunning = true;  }
+    void requestStop()  { _wantRunning = false; }
+    bool isRunning()    { return _running; }
+    uint32_t heapCost() { return _running && _heapAtStart > ESP.getFreeHeap()
+                                 ? _heapAtStart - ESP.getFreeHeap() : 0; }
+
     void loop() {
+        applyPendingState();
+        if (!_running || !_server) return;
+
         // A stuck client (connected but not reading) fills the TCP send buffer
         // and causes repeated EAGAIN write errors while holding heap. If the
         // largest contiguous free block drops below 50 KB, force-close all
         // connections by restarting the server — clients reconnect automatically.
+        // Rate-limited: without the cooldown this fires every 30ms tick while
+        // heap stays low, starving handleClient() exactly when clients are
+        // trying to reconnect.
         if (ESP.getMaxAllocHeap() < 50000) {
-            Logger.log(LOG_WARN, "WEB", "Low heap — closing stuck connections");
-            _server.stop();
-            delay(200);
-            _server.begin();
+            if (millis() - _lastStuckRestart >= 5000) {
+                _lastStuckRestart = millis();
+                Logger.log(LOG_WARN, "WEB", "Low heap — closing stuck connections");
+                _server->stop();
+                delay(200);
+                _server->begin();
+            }
             return;
         }
-        _server.handleClient();
+        _server->handleClient();
     }
 } WebServerManager;

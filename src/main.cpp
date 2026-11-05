@@ -1,5 +1,5 @@
 /**
- * InOut Firmware v0.5.2
+ * InOut Firmware v0.5.3
  * ESP32-WROOM32 · 2x PN532 · SD card · Relay · Buzzer · LEDs · LCD 16x2
  *
  * Single VSPI bus (SCK=18 MISO=19 MOSI=23) shared by PN532 readers + SD card.
@@ -445,7 +445,13 @@ void setup() {
     tzset();
     ApiClient.restoreTimeFromSD();
     Logger.log(LOG_INFO, "SYS", "TZ: " + Config.timezone + " → " + Config.getPosixTz());
-    WebServerManager.begin();
+    // The admin panel is NOT started at boot — it is the single largest
+    // consumer of heap on this device (route handlers, listening socket, and
+    // several KB of lwIP buffers per connected browser, on top of multi-KB
+    // response strings while a page is open). Card reads, SD logging and the
+    // server sync all work without it. Start it from the serial console with
+    // `locale` when you need it, and `locale off` to give the heap back.
+    Logger.log(LOG_INFO, "WEB", "Admin panel off (default) — type 'locale' on serial to start it");
 
     // ── 9. ESP32-CAM on UART2 ────────────────────────────────────────────────
     CamUart.begin();

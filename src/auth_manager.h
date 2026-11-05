@@ -245,6 +245,13 @@ public:
         _sessions.erase(token);
     }
 
+    // Drop every session and release the map's nodes. Called when the admin
+    // panel is stopped — the sessions have nothing left to authorise, and a
+    // token issued before the stop must not survive a later restart.
+    void clearSessions() {
+        _sessions.clear();
+    }
+
     void clearMustChange(const String& token) {
         auto it = _sessions.find(token);
         if (it != _sessions.end()) it->second.mustChange = false;
