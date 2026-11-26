@@ -1,5 +1,5 @@
 /**
- * InOut Firmware v0.5.3
+ * InOut Firmware v0.6.0
  * ESP32-WROOM32 · 2x PN532 · SD card · Relay · Buzzer · LEDs · LCD 16x2
  *
  * Single VSPI bus (SCK=18 MISO=19 MOSI=23) shared by PN532 readers + SD card.
@@ -13,7 +13,8 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <HTTPClient.h>
-#include <HTTPUpdate.h>
+#include <Update.h>
+#include <mbedtls/sha256.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <SPI.h>
@@ -170,42 +171,127 @@ void handleButtons() {
 }
 
 // ── OTA update ───────────────────────────────────────────────────────────────
-// Called from syncTask when sendHeartbeat() receives ota_url + ota_version.
-// Sets _otaInProgress so loop() freezes (no NFC reads, no relay, no web handler).
-// GitHub release URLs redirect; HTTPC_STRICT_FOLLOW_REDIRECTS handles that.
-// On success httpUpdate reboots into the new partition automatically.
-// On failure we reboot into the old partition (dual-OTA rollback is automatic).
-void performOta(const String& url, const String& version) {
+// Called from syncTask when the heartbeat carries ota_url + ota_version, and
+// from the serial `update` command. Sets _otaInProgress so loop() freezes.
+//
+// Downloads and flashes by hand instead of httpUpdate so the image can be
+// checked before it becomes bootable (§10.5):
+//   * ota_size   — Content-Length must match, and so must the bytes written;
+//   * ota_sha256 — sha256 over every byte written, compared before
+//                  Update.end(). On mismatch Update.abort() discards the
+//                  new partition and the device keeps running the old one.
+// Both are optional: a server that sends neither still gets an update (the
+// ESP32 image header check in Update still applies), just unverified.
+// A version that failed is not retried for an hour, so a bad URL or digest
+// doesn't turn into a download every 30 s.
+static String        _otaFailedVer;
+static unsigned long _otaFailedAt = 0;
+
+static void otaFail(const String& version, const char* why, const String& detail = "") {
+    Logger.log(LOG_ERROR, "OTA", String("Update failed — ") + why, detail);
+    Update.abort();
+    _otaFailedVer = version;
+    _otaFailedAt  = millis();
+    Lcd.showOtaError();
+    delay(3000);
+    _otaInProgress = false;
+}
+
+void performOta(const String& url, const String& version, const String& sha256, size_t size) {
     if (version == FIRMWARE_VERSION) {
         Logger.logf(LOG_INFO, "OTA", "Already on v%s — skipping", version.c_str());
         return;
     }
+    if (version == _otaFailedVer && millis() - _otaFailedAt < 3600000UL) return;
+    if (sha256.length() && sha256.length() != 64) {
+        Logger.log(LOG_ERROR, "OTA", "ota_sha256 is not a sha256 hex digest — refusing", sha256);
+        return;
+    }
+
     _otaInProgress = true;
-    Logger.logf(LOG_INFO, "OTA", "Starting update v%s", version.c_str());
+    Logger.logf(LOG_INFO, "OTA", "Starting update v%s (%s, %u bytes expected)", version.c_str(),
+                sha256.length() ? "sha256 verified" : "UNVERIFIED — no ota_sha256", (unsigned)size);
     Lcd.showOta(version);
+    ApiClient.endCycle();  // free the sync TLS session — this one needs the heap
 
     WiFiClientSecure client;
     ApiClient.configureClient(client);
-    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    httpUpdate.rebootOnUpdate(true);
-    httpUpdate.onProgress([](int cur, int total) {
-        if (total > 0) Lcd.showOtaProgress((cur * 100) / total);
-    });
-
-    t_httpUpdate_return ret = httpUpdate.update(client, url);
-
-    // HTTP_UPDATE_OK never reaches here — device reboots automatically.
-    if (ret == HTTP_UPDATE_FAILED) {
-        Logger.logf(LOG_ERROR, "OTA", "Failed (%d): %s",
-                    httpUpdate.getLastError(),
-                    httpUpdate.getLastErrorString().c_str());
-        Lcd.showOtaError();
-        delay(4000);
-        ESP.restart();  // boots old partition
+    HTTPClient http;
+    http.begin(client, url);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // GitHub release URLs redirect
+    http.setTimeout(20000);
+    int code = http.GET();
+    if (code != 200) {
+        String why = code > 0 ? ("HTTP " + String(code)) : HTTPClient::errorToString(code);
+        http.end();
+        { otaFail(version, "download", why); return; }
     }
-    // HTTP_UPDATE_NO_UPDATES: server said nothing to install — resume normal operation.
-    Logger.log(LOG_WARN, "OTA", "Server reported no update available");
-    _otaInProgress = false;
+    int len = http.getSize();
+    if (size > 0 && len > 0 && (size_t)len != size) {
+        http.end();
+        { otaFail(version, "size mismatch",
+                       "server says " + String((unsigned)size) + ", download is " + String(len)); return; }
+    }
+    size_t total = len > 0 ? (size_t)len : size;
+    if (total == 0) {
+        http.end();
+        { otaFail(version, "unknown image size (no Content-Length, no ota_size)"); return; }
+    }
+    if (!Update.begin(total, U_FLASH)) {
+        http.end();
+        { otaFail(version, "Update.begin", Update.errorString()); return; }
+    }
+
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+
+    WiFiClient* stream = http.getStreamPtr();
+    uint8_t buf[1024];
+    size_t written = 0;
+    unsigned long lastData = millis();
+    int lastPct = -1;
+    while (written < total) {
+        size_t avail = stream->available();
+        if (avail == 0) {
+            if (!http.connected() || millis() - lastData > 20000) break;
+            delay(5);
+            continue;
+        }
+        int rd = stream->readBytes(buf, min(avail, min(sizeof(buf), total - written)));
+        if (rd <= 0) continue;
+        lastData = millis();
+        if (Update.write(buf, rd) != (size_t)rd) {
+            mbedtls_sha256_free(&ctx);
+            http.end();
+            { otaFail(version, "flash write", Update.errorString()); return; }
+        }
+        mbedtls_sha256_update(&ctx, buf, rd);
+        written += rd;
+        int pct = (int)((written * 100) / total);
+        if (pct != lastPct) { Lcd.showOtaProgress(pct); lastPct = pct; }
+    }
+    http.end();
+
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&ctx, digest);
+    mbedtls_sha256_free(&ctx);
+    char hex[65];
+    for (int i = 0; i < 32; i++) snprintf(hex + i*2, 3, "%02x", digest[i]);
+
+    if (written != total)
+        { otaFail(version, "download incomplete",
+                       String((unsigned)written) + " of " + String((unsigned)total) + " bytes"); return; }
+    if (sha256.length() && !sha256.equalsIgnoreCase(hex))
+        { otaFail(version, "sha256 mismatch — image discarded",
+                       String("expected ") + sha256 + " got " + hex); return; }
+    if (!Update.end(true))
+        { otaFail(version, "Update.end", Update.errorString()); return; }
+
+    Logger.logf(LOG_INFO, "OTA", "v%s written and verified (sha256 %s) — rebooting", version.c_str(), hex);
+    Config.markOtaReboot();
+    delay(500);
+    ESP.restart();
 }
 
 // ── Camera OTA ────────────────────────────────────────────────────────────────
@@ -268,10 +354,14 @@ void syncTask(void*) {
     for (int i = 0; i < 30 && !ApiClient.isNtpSynced(); i++) {
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
+    ApiClient.lockCycle(portMAX_DELAY);
     if (!ApiClient.syncWhitelist()) {
         Logger.log(LOG_WARN, "SYNC", "Server unreachable — working locally");
         Lcd.showNotice(" Server offline", " Working locally", 5000);
     }
+    ApiClient.endCycle();
+    ApiClient.unlockCycle();
+    unsigned long lastWhitelistSync = millis();
     // Adaptive heap guard: starts at 55 KB, lowers by 2 KB every 5 consecutive
     // cycles where the observed floor stays >10 KB above the guard, down to
     // 45 KB minimum. Resets the counter any time the floor gets close.
@@ -281,6 +371,7 @@ void syncTask(void*) {
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
+        ApiClient.lockCycle(portMAX_DELAY);
 
         uint32_t maxAlloc = ESP.getMaxAllocHeap();
         heapFloor = min(heapFloor, maxAlloc);
@@ -319,17 +410,28 @@ void syncTask(void*) {
             stableCount = 0;
         }
         ApiClient.syncEmployees();
-        long age = (millis()/1000) - SdManager.whitelistUpdatedAt();
-        if (age > 300 || age < 0) ApiClient.syncWhitelist();
         SdManager.trimLog();
         Logger.trimLog();
         if (ESP.getMaxAllocHeap() >= 65000) ApiClient.sendHeartbeat();
+        // Whitelist: fetched when the heartbeat's whitelist_version differs
+        // from ours (or the server asked for a resync). The 15-minute
+        // fallback covers heartbeats skipped for low heap; with ?since= an
+        // up-to-date device gets an empty delta, so it costs almost nothing.
+        if (ApiClient.whitelistStale || millis() - lastWhitelistSync > 15UL * 60UL * 1000UL) {
+            if (ApiClient.syncWhitelist()) lastWhitelistSync = millis();
+        }
+        ApiClient.endCycle();
+        ApiClient.unlockCycle();
         if (ApiClient.pendingOtaUrl.length() > 0) {
             String url = ApiClient.pendingOtaUrl;
             String ver = ApiClient.pendingOtaVersion;
+            String sha = ApiClient.pendingOtaSha256;
+            size_t sz  = ApiClient.pendingOtaSize;
             ApiClient.pendingOtaUrl     = "";
             ApiClient.pendingOtaVersion = "";
-            performOta(url, ver);
+            ApiClient.pendingOtaSha256  = "";
+            ApiClient.pendingOtaSize    = 0;
+            performOta(url, ver, sha, sz);
         }
         if (ApiClient.pendingCamOtaUrl.length() > 0) {
             String url = ApiClient.pendingCamOtaUrl;
@@ -359,6 +461,7 @@ void setup() {
 
     // Load config first — needed for CS pin values
     Config.load();
+    Config.bumpBootCount();  // event_id prefix — must precede the first tap
 
     // ── 1. NFC on VSPI ────────────────────────────────────────────────────────
     // This calls SPI.begin() and drives ALL CS pins HIGH (including SD CS)
@@ -368,6 +471,7 @@ void setup() {
     delay(500);  // SD power rail stabilize
     bool sdOk = SdManager.begin();
     if (sdOk) {
+        Config.whitelistVersion = SdManager.readWhitelistVersion();
         Logger.setSDReady(true);
         Logger.log(LOG_INFO, "SYS", "InOut v" FIRMWARE_VERSION " boot — SD ready");
     }
@@ -455,6 +559,7 @@ void setup() {
 
     // ── 9. ESP32-CAM on UART2 ────────────────────────────────────────────────
     CamUart.begin();
+    ApiClient.camOkFn = []() { return CamUart.isReady(); };
     if (CamUart.isReady()) {
         // WiFi.psk() returns the password of the currently connected network
         // regardless of whether it was set via portal or 'set wifi' command.

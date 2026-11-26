@@ -41,7 +41,8 @@
 #include <vector>
 #include "config.h"
 extern bool _buzzerMuted;
-extern void performOta(const String& url, const String& version);
+extern void performOta(const String& url, const String& version,
+                       const String& sha256 = "", size_t size = 0);
 extern void performCamOta(const String& url, const String& version);
 #include "sd_manager.h"
 #include "logger.h"
@@ -251,10 +252,17 @@ private:
 
     void doSync() {
         Serial.println("[CMD] Syncing with server...");
+        // Same lock as syncTask's cycle, so the two can't run side by side.
+        if (!ApiClient.lockCycle(60000)) {
+            Serial.println("[CMD] A sync is already running — try again shortly");
+            return;
+        }
         bool wl = ApiClient.syncWhitelist();
         int  ev = ApiClient.syncEvents();
         int  em = ApiClient.syncEmployees();
         ApiClient.sendHeartbeat();
+        ApiClient.endCycle();
+        ApiClient.unlockCycle();
         Serial.printf("[CMD] Whitelist: %s  Events synced: %d  Employees synced: %d\n",
                       wl ? "ok" : "failed", ev, em);
     }

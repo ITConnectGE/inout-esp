@@ -14,7 +14,7 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
-#define FIRMWARE_VERSION "0.5.3"
+#define FIRMWARE_VERSION "0.6.0"
 
 // ── VSPI — PN532 ─────────────────────────────────────────────────────────────
 #define PIN_VSPI_SCK   18
@@ -69,6 +69,43 @@ struct ConfigData {
     int    relayMs;
     int    configVersion;
     String directionMode = "in"; // "in", "out", or "toggle" — refreshed from server on sync
+
+    // Whitelist version the device has fully applied (server's per-company
+    // counter, see DEVICE_API.md §10.1). 0 = nothing yet → next sync is full.
+    // Persisted inside /data/whitelist.json, next to the data it describes —
+    // not in NVS — so a wiped or swapped SD card, or a factory reset, can
+    // never leave a version claiming data the card doesn't have.
+    long   whitelistVersion = 0;
+
+    // Incremented once per boot. Prefix of every event_id ("<boot>-<seq>").
+    // Own namespace "evt", which factory reset does NOT clear: restarting at
+    // 1 would reuse ids the server has already seen and make it drop new
+    // taps as duplicates. A blank namespace (first boot, full flash erase)
+    // starts at a random offset for the same reason.
+    uint32_t bootCount = 0;
+
+    void bumpBootCount() {
+        Preferences p; p.begin("evt", false);
+        uint32_t prev = p.getUInt("boot", 0);
+        if (prev == 0) prev = 100000 + (esp_random() % 900000);
+        bootCount = prev + 1;
+        p.putUInt("boot", bootCount);
+        p.end();
+    }
+
+    // Set right before the restart that follows a successful OTA write, read
+    // (and cleared) once at the next boot so the heartbeat can report
+    // reset_reason "ota" instead of a plain "software" restart.
+    void markOtaReboot() {
+        Preferences p; p.begin("cp", false); p.putBool("ota_boot", true); p.end();
+    }
+    bool takeOtaReboot() {
+        Preferences p; p.begin("cp", false);
+        bool v = p.getBool("ota_boot", false);
+        if (v) p.remove("ota_boot");
+        p.end();
+        return v;
+    }
 
     // ── WiFi credentials (namespace "wf", separate from WiFiManager) ──────────
     String wifiSsid;
@@ -156,6 +193,7 @@ struct ConfigData {
         Serial.printf ("  CS IN/OUT  : GPIO%d / GPIO%d\n", csPin_IN, csPin_OUT);
         Serial.printf ("  CS SD      : GPIO%d\n", csPin_SD);
         Serial.printf ("  Config ver : %d\n", configVersion);
+        Serial.printf ("  Whitelist  : v%ld\n", whitelistVersion);
         Serial.println();
     }
 
