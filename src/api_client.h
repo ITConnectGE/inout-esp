@@ -6,10 +6,29 @@
 #include <SD.h>
 #include <time.h>
 #include <vector>
+#include <esp_system.h>
+#include <algorithm>
 #include "config.h"
 #include "nfc_reader.h"
 #include "sd_manager.h"
 #include "logger.h"
+
+// reset_reason for the heartbeat (§10.6). Computed once at boot.
+static const char* resetReasonName(bool otaFlag) {
+    if (otaFlag) return "ota";
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:  return "power_on";
+        case ESP_RST_PANIC:    return "panic";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:      return "watchdog";
+        case ESP_RST_SW:       return "software";
+        case ESP_RST_EXT:      return "external";
+        case ESP_RST_DEEPSLEEP:return "deep_sleep";
+        default:               return "unknown";
+    }
+}
 
 struct ApiResponse {
     bool   granted    = false;
@@ -22,10 +41,15 @@ struct ApiResponse {
 struct ApiClientClass {
 private:
     bool _ntpSynced = false;
-    SemaphoreHandle_t _mutex = nullptr;
+    SemaphoreHandle_t _mutex = nullptr;   // one HTTP request on _wcs at a time
+    SemaphoreHandle_t _cycle = nullptr;   // one sync cycle at a time (syncTask vs serial `sync`)
     String _caCert;
     WiFiClientSecure _wcs;
-    JsonDocument _doc;
+    uint32_t _eventSeq = 0;
+    int _syncErrors = 0;
+    const char* _resetReason = "unknown";
+    // JSON documents are local to each call now — the old long-lived _doc
+    // kept its pool between syncs and was touched outside the mutex.
 
     void loadCaCert() {
         if (!SdManager.isMounted() || !SD.exists("/data/ca.pem")) {
@@ -35,8 +59,17 @@ private:
         }
         File f = SD.open("/data/ca.pem", FILE_READ);
         if (!f) return;
+        size_t len = f.size();
         _caCert = "";
-        while (f.available()) _caCert += (char)f.read();
+        if (len > 0 && len < 16384 && _caCert.reserve(len)) {
+            char buf[256];
+            while (f.available()) {
+                int rd = f.read((uint8_t*)buf, sizeof(buf) - 1);
+                if (rd <= 0) break;
+                buf[rd] = '\0';
+                _caCert += buf;
+            }
+        }
         f.close();
         Logger.logf(LOG_INFO, "API", "CA cert loaded from /data/ca.pem (%d bytes)", _caCert.length());
     }
@@ -132,6 +165,8 @@ public:
     // Consumed and cleared by syncTask in main.cpp.
     String pendingOtaUrl;
     String pendingOtaVersion;
+    String pendingOtaSha256;   // lowercase hex, "" = server gave none (can't verify)
+    size_t pendingOtaSize = 0; // bytes, 0 = unknown
 
     // Camera firmware version — set by main.cpp after CamUart.requestVersion().
     // Included in heartbeat payload so the dashboard can track camera firmware.
@@ -140,6 +175,34 @@ public:
     // Camera OTA — set by sendHeartbeat(), consumed by syncTask in main.cpp.
     String pendingCamOtaUrl;
     String pendingCamOtaVersion;
+
+    // Set by main.cpp — CamUart lives in a header included after this one.
+    bool (*camOkFn)() = nullptr;
+
+    // Heartbeat said the server's whitelist_version differs from ours (or
+    // asked for a resync). Consumed by syncTask.
+    volatile bool whitelistStale = false;
+
+    // Serialises whole sync cycles: syncTask holds it for its 30 s pass, and
+    // the serial `sync` command takes it too, so the two can't interleave
+    // and send the same events twice.
+    bool lockCycle(uint32_t ms) { return _cycle && xSemaphoreTakeRecursive(_cycle, pdMS_TO_TICKS(ms)) == pdTRUE; }
+    void unlockCycle()          { if (_cycle) xSemaphoreGiveRecursive(_cycle); }
+
+    // Close the TLS session at the end of a sync cycle. HTTPClient keeps it
+    // open for reuse, which pinned 40–50 KB of heap for the whole 30 s gap
+    // between syncs. A fresh handshake every 30 s is cheaper than that.
+    void endCycle() {
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) return;
+        _wcs.stop();
+        xSemaphoreGiveRecursive(_mutex);
+    }
+
+    String nextEventId() {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%lu-%lu", (unsigned long)Config.bootCount, (unsigned long)++_eventSeq);
+        return String(buf);
+    }
 
     // Persist UTC epoch to SD so reboots start with an approximate clock.
     void saveTimeToSD() {
@@ -170,6 +233,8 @@ public:
 
     void begin() {
         _mutex = xSemaphoreCreateRecursiveMutex();
+        _cycle = xSemaphoreCreateRecursiveMutex();
+        _resetReason = resetReasonName(Config.takeOtaReboot());
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
         setenv("TZ", Config.getPosixTz().c_str(), 1);
         tzset();
@@ -220,7 +285,8 @@ public:
                            logDir,
                            resp.granted ? "granted" : "denied",
                            resp.happenedAt,
-                           resp.reason);
+                           resp.reason,
+                           nextEventId());
         if (resp.granted) {
             Logger.logf(LOG_INFO, "CARD", "GRANTED  uid=%s  name=%s  dir=%s",
                         uid.c_str(), resp.name.c_str(), dir == DIR_IN ? "IN" : "OUT");
@@ -231,13 +297,21 @@ public:
         return resp;
     }
 
+    // POST /device/employees/batch (§10.3). HTTP 200 now carries both
+    // halves: `ids` (saved) and `errors` (refused, per record). Only the
+    // records named in `ids` are marked synced — the old code marked every
+    // employee on the device synced after any 200.
     int syncEmployees() {
         if (!serverReachable()) return -1;
-        _doc.clear();
-        JsonArray arr = _doc["employees"].to<JsonArray>();
-        if (!SdManager.getUnsyncedEmployees(arr)) return 0;
-        int count = (int)arr.size();
-        String body; serializeJson(_doc, body);
+        String body;
+        int count;
+        {
+            JsonDocument doc;
+            JsonArray arr = doc["employees"].to<JsonArray>();
+            if (!SdManager.getUnsyncedEmployees(arr)) return 0;
+            count = (int)arr.size();
+            serializeJson(doc, body);
+        }
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_ERROR, "SYNC", "Employees sync: mutex timeout");
             return -1;
@@ -246,39 +320,56 @@ public:
         http.begin(_wcs, Config.serverUrl + "/device/employees/batch");
         http.setTimeout(8000); auth(http);
         int code = http.POST(body);
-        String respBody = http.getString(); http.end();
+        body = String();
+        String respBody = code > 0 ? http.getString() : "";
+        http.end();
         xSemaphoreGiveRecursive(_mutex);
-        if (code == 200 || code == 201) {
-            _doc.clear();
-            if (!deserializeJson(_doc, respBody)) {
-                JsonArray ids = _doc["ids"].as<JsonArray>();
-                SdManager.markEmployeesSynced(ids);
-            }
-            Logger.logf(LOG_INFO, "SYNC", "Employees synced: %d record(s)", count);
-            return count;
+        if (code != 200 && code != 201) {
+            Logger.log(LOG_ERROR, "SYNC", "Employees sync failed",
+                       code > 0 ? serverErrMsg(code, respBody) : transportErrMsg(code));
+            return -1;
         }
-        Logger.log(LOG_ERROR, "SYNC", "Employees sync failed",
-                   code > 0 ? serverErrMsg(code, respBody) : transportErrMsg(code));
-        return -1;
+        JsonDocument r;
+        if (deserializeJson(r, respBody)) {
+            Logger.log(LOG_ERROR, "SYNC", "Employees sync: unreadable response", respBody.substring(0, 120));
+            return -1;
+        }
+        JsonArrayConst ids  = r["ids"].as<JsonArrayConst>();
+        JsonArrayConst errs = r["errors"].as<JsonArrayConst>();
+        for (JsonObjectConst e : errs) {
+            String fields; serializeJson(e["fields"], fields);
+            String detail = String(e["local_id"] | "?") + " " + fields;
+            Logger.log(LOG_WARN, "SYNC", "Employee refused by server — fix it in the panel to retry",
+                       detail.substring(0, 200));
+        }
+        _syncErrors = SdManager.applyEmployeeSyncResult(ids, errs);
+        int ok = (int)ids.size();
+        Logger.logf(LOG_INFO, "SYNC", "Employees synced: %d of %d (refused: %d)",
+                    ok, count, (int)errs.size());
+        return ok;
     }
 
+    // POST /device/events/batch (§10.4). Every event carries its event_id;
+    // the answer lists accepted / duplicates / rejected by id, and exactly
+    // those lines are marked synced. Rejected ones are logged and not resent.
     int syncEvents() {
         if (!serverReachable()) return -1;
         int n = SdManager.unsyncedCount();
         if (n == 0) return 0;
 
-        _doc.clear();
-        JsonArray arr = _doc["events"].to<JsonArray>();
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
         if (!SdManager.getUnsyncedEvents(arr, 15)) {
-            Logger.logf(LOG_WARN, "SYNC", "Dropping %d unsendable events (bad timestamps)", n);
-            SdManager.markAllSynced();
+            int dropped = SdManager.dropUnsendableEvents();
+            if (dropped > 0)
+                Logger.logf(LOG_WARN, "SYNC", "Dropping %d event(s) recorded before the clock was set", dropped);
             return 0;
         }
         int batchSize = (int)arr.size();
         const char* boundary = "----ESP32Bnd9f2a";
 
         // ── Find photos for these events ───────────────────────────────────────
-        struct PInfo { String path; size_t size; bool ok = false; };
+        struct PInfo { String path; size_t size = 0; bool ok = false; };
         PInfo photos[15];
         for (int i = 0; i < batchSize; i++) {
             photos[i].path = SdManager.getPhotoForEvent(
@@ -293,9 +384,8 @@ public:
         }
 
         // ── Write multipart body to SD temp file ───────────────────────────────
-        // Avoids holding a large RAM buffer (photo bytes) during the SSL
-        // handshake which needs ~80 KB of its own — the two together caused
-        // "SSL alloc failed" OOM errors. Streaming from SD keeps peak RAM low.
+        // Streaming from SD keeps the photo bytes out of RAM during the TLS
+        // handshake. Field names go through a fixed buffer, not String +.
         const char* tmpPath = "/data/batch.tmp";
         {
             File tmp = SD.open(tmpPath, FILE_WRITE);
@@ -303,25 +393,25 @@ public:
                 Logger.log(LOG_ERROR, "SYNC", "Cannot create batch temp file");
                 return -1;
             }
+            char name[40];
+            auto fld = [&](int i, const char* key, const char* val) {
+                snprintf(name, sizeof(name), "events[%d][%s]", i, key);
+                tmp.print("--"); tmp.print(boundary);
+                tmp.print("\r\nContent-Disposition: form-data; name=\"");
+                tmp.print(name); tmp.print("\"\r\n\r\n");
+                tmp.print(val); tmp.print("\r\n");
+            };
+            bool toggle = (Config.directionMode == "toggle");
             for (int i = 0; i < batchSize; i++) {
-                String uid = arr[i]["uid"] | "";
-                String ts  = arr[i]["happened_at"] | "";
-                String dec = arr[i]["decision"] | "denied";
-                String dir = (Config.directionMode == "toggle")
-                             ? "unknown" : String(arr[i]["direction"] | "unknown");
-                String rsn = arr[i]["reason"] | "";
-                auto fld = [&](const String& nm, const String& val) {
-                    tmp.print("--"); tmp.print(boundary);
-                    tmp.print("\r\nContent-Disposition: form-data; name=\"");
-                    tmp.print(nm); tmp.print("\"\r\n\r\n");
-                    tmp.print(val); tmp.print("\r\n");
-                };
-                fld("events[" + String(i) + "][uid]", uid);
-                fld("events[" + String(i) + "][happened_at]", ts);
-                fld("events[" + String(i) + "][decision]", dec);
-                fld("events[" + String(i) + "][direction]", dir);
-                if (rsn.length()) fld("events[" + String(i) + "][reason]", rsn);
+                fld(i, "event_id",    arr[i]["event_id"]    | "");
+                fld(i, "uid",         arr[i]["uid"]         | "");
+                fld(i, "happened_at", arr[i]["happened_at"] | "");
+                fld(i, "decision",    arr[i]["decision"]    | "denied");
+                fld(i, "direction",   toggle ? "unknown" : (arr[i]["direction"] | "unknown"));
+                const char* rsn = arr[i]["reason"] | "";
+                if (*rsn) fld(i, "reason", rsn);
             }
+            uint8_t chunk[512];
             for (int i = 0; i < batchSize; i++) {
                 if (!photos[i].ok) continue;
                 tmp.print("--"); tmp.print(boundary);
@@ -330,7 +420,6 @@ public:
                     "Content-Type: image/jpeg\r\n\r\n");
                 File pf = SD.open(photos[i].path, FILE_READ);
                 if (pf) {
-                    uint8_t chunk[512];
                     while (pf.available()) {
                         int rd = pf.read(chunk, sizeof(chunk));
                         if (rd > 0) tmp.write(chunk, rd);
@@ -370,63 +459,210 @@ public:
         xSemaphoreGiveRecursive(_mutex);
         SD.remove(tmpPath);
 
-        if (code == 200 || code == 201) {
-            SdManager.markNEventsSynced(batchSize);
-            int nPhotos = 0;
-            for (int i = 0; i < batchSize; i++) {
-                // Delete all photos for this batch: events are synced so any
-                // unincluded photo would be orphaned on SD with no way to upload.
-                if (!photos[i].path.isEmpty()) { SD.remove(photos[i].path.c_str()); nPhotos++; }
-            }
-            Logger.logf(LOG_INFO, "SYNC", "Events synced: %d (of %d), photos: %d",
-                        batchSize, n, nPhotos);
-            return batchSize;
+        if (code != 200 && code != 201) {
+            Logger.log(LOG_ERROR, "SYNC", "Events sync failed",
+                       code > 0 ? serverErrMsg(code, respBody) : transportErrMsg(code));
+            return -1;
         }
-        Logger.log(LOG_ERROR, "SYNC", "Events sync failed",
-                   code > 0 ? serverErrMsg(code, respBody) : transportErrMsg(code));
-        return -1;
+
+        // ── Which events did the server answer for? ────────────────────────────
+        std::vector<String> done;
+        int nAcc = 0, nDup = 0, nRej = 0;
+        JsonDocument r;
+        bool listed = !deserializeJson(r, respBody) && r["accepted"].is<JsonArray>();
+        respBody = String();
+        if (listed) {
+            for (JsonVariantConst v : r["accepted"].as<JsonArrayConst>())   { done.push_back(v.as<String>()); nAcc++; }
+            for (JsonVariantConst v : r["duplicates"].as<JsonArrayConst>()) { done.push_back(v.as<String>()); nDup++; }
+            for (JsonObjectConst rj : r["rejected"].as<JsonArrayConst>()) {
+                String id = rj["event_id"] | "";
+                int idx = rj["index"] | -1;
+                if (id.isEmpty() && idx >= 0 && idx < batchSize) id = arr[idx]["event_id"] | "";
+                if (id.isEmpty()) continue;
+                done.push_back(id); nRej++;
+                Logger.log(LOG_WARN, "SYNC", "Event rejected by server — not resending",
+                           id + ": " + String(rj["error"] | "?"));
+            }
+        } else {
+            // Pre-v0.6.0 server: answers with counts only. A 200 means the
+            // whole batch was taken (it validated the batch as one).
+            for (int i = 0; i < batchSize; i++) done.push_back(arr[i]["event_id"] | "");
+            nAcc = batchSize;
+        }
+        SdManager.markEventsSynced(done);
+
+        int nPhotos = 0;
+        for (int i = 0; i < batchSize; i++) {
+            if (photos[i].path.isEmpty()) continue;
+            String id = arr[i]["event_id"] | "";
+            if (std::find(done.begin(), done.end(), id) == done.end()) continue;  // will be resent with it
+            SD.remove(photos[i].path.c_str()); nPhotos++;
+        }
+        Logger.logf(LOG_INFO, "SYNC", "Events: %d sent, %d accepted, %d duplicate, %d rejected (of %d), photos: %d",
+                    batchSize, nAcc, nDup, nRej, n, nPhotos);
+        return (int)done.size();
     }
 
+    // Whitelist sync. Delta by default (§10.2): GET /device/sync?since=<v>,
+    // paged with an opaque cursor, applied page by page; the version is
+    // stored only after the last page is on SD, and checked against the
+    // server's checksum. A mismatch triggers one full resync.
     bool syncWhitelist() {
-        if (!serverReachable()) return false;
+        int r = syncWhitelistPass(false);
+        if (r == WL_MISMATCH) r = syncWhitelistPass(true);
+        if (r == WL_OK || r == WL_MISMATCH) whitelistStale = false;
+        return r != WL_FAIL;
+    }
+
+private:
+    enum { WL_FAIL = 0, WL_OK = 1, WL_MISMATCH = 2 };
+
+    void applyServerConfig(JsonDocument& d) {
+        bool changed = false;
+        if (!d["relay_ms"].isNull() && (int)d["relay_ms"] != Config.relayMs) {
+            Config.relayMs = d["relay_ms"]; changed = true;
+        }
+        if (!d["config_version"].isNull() && (int)d["config_version"] != Config.configVersion) {
+            Config.configVersion = d["config_version"]; changed = true;
+        }
+        if (!d["direction_mode"].isNull() && d["direction_mode"].as<String>() != Config.directionMode) {
+            Config.directionMode = d["direction_mode"].as<String>(); changed = true;
+        }
+        // Only write NVS when something changed — this used to run every sync.
+        if (changed) { Config.save(); SdManager.backupConfig(); }
+    }
+
+    // Fetch one GET into `payload`. Holds _mutex only for the request.
+    int getJson(const String& url, String& payload) {
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_ERROR, "SYNC", "Whitelist sync: mutex timeout");
-            return false;
+            return -1;
         }
         HTTPClient http;
-        http.begin(_wcs, Config.serverUrl + "/device/sync");
-        http.setTimeout(8000); auth(http);
+        http.begin(_wcs, url);
+        http.setTimeout(10000); auth(http);
         const char* dateHdr[] = {"Date"};
         http.collectHeaders(dateHdr, 1);
         int code = http.GET();
-        if (code != 200) {
-            String errBody = code > 0 ? http.getString() : "";
-            http.end(); xSemaphoreGiveRecursive(_mutex);
-            Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed",
-                       code > 0 ? serverErrMsg(code, errBody) : transportErrMsg(code));
-            return false;
-        }
-        // Use server's Date header to set clock when NTP hasn't resolved yet.
-        if (!_ntpSynced && http.hasHeader("Date"))
+        if (code == 200 && !_ntpSynced && http.hasHeader("Date"))
             syncTimeFromHttpDate(http.header("Date"));
-        String payload = http.getString(); http.end();
+        payload = code > 0 ? http.getString() : "";
+        http.end();
         xSemaphoreGiveRecursive(_mutex);
-        _doc.clear();
-        if (!deserializeJson(_doc, payload)) {
-            if (!_doc["relay_ms"].isNull())       Config.relayMs       = _doc["relay_ms"];
-            if (!_doc["config_version"].isNull()) Config.configVersion = _doc["config_version"];
-            if (!_doc["direction_mode"].isNull()) Config.directionMode = _doc["direction_mode"].as<String>();
-            Config.save();
-        }
-        bool ok = SdManager.updateWhitelist(payload);
-        SdManager.backupConfig();
-        if (ok) Logger.log(LOG_INFO, "SYNC", "Whitelist updated");
-        else    Logger.log(LOG_ERROR, "SYNC", "Whitelist update failed — bad payload format");
-        return ok;
+        return code;
     }
 
+    int syncWhitelistPass(bool forceFull) {
+        if (!serverReachable()) return WL_FAIL;
+        long since = forceFull ? 0 : Config.whitelistVersion;
+        String cursor;
+        std::vector<int> seen;
+        bool full = false;
+        int nUp = 0, nDel = 0;
+        // Small pages: the response is held in RAM twice (text + parsed), and
+        // the server's own cap is ~28 KB. 50 records keeps it around 8 KB.
+        for (int page = 0; page < 200; page++) {
+            String url = Config.serverUrl + "/device/sync?limit=50&";
+            url += cursor.length() ? ("cursor=" + cursor) : ("since=" + String(since));
+            String payload;
+            int code = getJson(url, payload);
+            if (code != 200) {
+                Logger.log(LOG_ERROR, "SYNC", "Whitelist fetch failed",
+                           code > 0 ? serverErrMsg(code, payload) : transportErrMsg(code));
+                return WL_FAIL;
+            }
+            JsonDocument d;
+            DeserializationError err = deserializeJson(d, payload);
+            if (err) {
+                Logger.logf(LOG_ERROR, "SYNC", "Whitelist page unreadable: %s (%u bytes, maxBlock=%u)",
+                            err.c_str(), payload.length(), ESP.getMaxAllocHeap());
+                return WL_FAIL;
+            }
+            if (page == 0) applyServerConfig(d);
+
+            if (!d["upserts"].is<JsonArray>()) {
+                // Pre-v0.6.0 server ignored ?since= and sent the full legacy list.
+                d.clear();
+                bool ok = SdManager.updateWhitelist(payload);
+                if (ok) Logger.log(LOG_INFO, "SYNC", "Whitelist updated (legacy full list)");
+                else    Logger.log(LOG_ERROR, "SYNC", "Whitelist update failed — legacy payload not understood");
+                return ok ? WL_OK : WL_FAIL;
+            }
+            payload = String();  // free the text before touching SD
+
+            if (page == 0) full = d["full"] | false;
+            if (!SdManager.applySyncPage(d.as<JsonObjectConst>(), full, seen, nUp, nDel))
+                return WL_FAIL;
+
+            if (d["has_more"] | false) {
+                cursor = d["cursor"] | "";
+                if (cursor.isEmpty()) {
+                    Logger.log(LOG_ERROR, "SYNC", "Whitelist: has_more without cursor");
+                    return WL_FAIL;
+                }
+                continue;
+            }
+
+            // ── Last page ─────────────────────────────────────────────────────
+            if (full) SdManager.finishFullSync(seen);
+            long version = d["version"] | 0L;
+            int cnt = 0; String hash; bool comparable = false;
+            if (!SdManager.rebuildWhitelist(version, cnt, hash, comparable)) {
+                Logger.log(LOG_ERROR, "SYNC", "Whitelist: cannot rebuild whitelist.json");
+                return WL_FAIL;
+            }
+            int  srvCnt  = d["checksum"]["cards"] | -1;
+            String srvHash = d["checksum"]["hash"] | "";
+            bool mismatch = comparable && srvCnt >= 0 && srvHash.length()
+                          && (srvCnt != cnt || !srvHash.equalsIgnoreCase(hash));
+            if (mismatch && !forceFull) {
+                Logger.logf(LOG_WARN, "SYNC", "Whitelist checksum mismatch (server %d cards, local %d) — full resync",
+                            srvCnt, cnt);
+                Config.whitelistVersion = 0;  // if the full pass fails, the next attempt is full too
+                return WL_MISMATCH;
+            }
+            if (mismatch)
+                Logger.logf(LOG_ERROR, "SYNC", "Whitelist still differs after full sync (server %d cards, local %d)",
+                            srvCnt, cnt);
+            Config.whitelistVersion = version;
+            if (full || nUp || nDel)
+                Logger.logf(LOG_INFO, "SYNC", "Whitelist %s → v%ld (%d updated, %d removed, %d active cards)",
+                            full ? "full" : "delta", version, nUp, nDel, cnt);
+            return mismatch ? WL_MISMATCH : WL_OK;
+        }
+        Logger.log(LOG_ERROR, "SYNC", "Whitelist: too many pages — giving up this cycle");
+        return WL_FAIL;
+    }
+
+public:
     void sendHeartbeat() {
         if (!serverReachable()) return;
+        String body;
+        {
+            JsonDocument doc;
+            doc["firmware"]        = FIRMWARE_VERSION;
+            if (camFirmwareVersion.length() > 0)
+                doc["cam_firmware"] = camFirmwareVersion;
+            doc["ip"]              = WiFi.localIP().toString();
+            doc["rssi"]            = WiFi.RSSI();
+            doc["config_version"]  = Config.configVersion;
+            doc["unsynced_events"] = SdManager.unsyncedCount();
+            doc["sd_mounted"]      = SdManager.isMounted();
+            doc["uptime_s"]        = millis()/1000;
+            // §10.6 diagnostics — all optional on the server side.
+            doc["whitelist_version"] = Config.whitelistVersion;
+            doc["heap_free"]       = ESP.getFreeHeap();
+            doc["heap_min"]        = ESP.getMinFreeHeap();
+            doc["heap_max_block"]  = ESP.getMaxAllocHeap();
+            doc["reset_reason"]    = _resetReason;
+            doc["sync_errors"]     = _syncErrors;
+            doc["nfc_in_ok"]       = NfcReader.isOk(READER_IN);
+            doc["nfc_out_ok"]      = NfcReader.isOk(READER_OUT);
+            if (camOkFn) doc["cam_ok"] = camOkFn();
+            if (SdManager.isMounted())
+                doc["sd_free_mb"]  = (uint32_t)((SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
+            serializeJson(doc, body);
+        }
         if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(10000))) {
             Logger.log(LOG_WARN, "API", "Heartbeat: mutex timeout");
             return;
@@ -434,47 +670,40 @@ public:
         HTTPClient http;
         http.begin(_wcs, Config.serverUrl + "/device/heartbeat");
         http.setTimeout(5000); auth(http);
-        _doc.clear();
-        _doc["firmware"]        = FIRMWARE_VERSION;
-        if (camFirmwareVersion.length() > 0)
-            _doc["cam_firmware"] = camFirmwareVersion;
-        _doc["ip"]              = WiFi.localIP().toString();
-        _doc["rssi"]            = WiFi.RSSI();
-        _doc["config_version"]  = Config.configVersion;
-        _doc["unsynced_events"] = SdManager.unsyncedCount();
-        _doc["sd_mounted"]      = SdManager.isMounted();
-        _doc["uptime_s"]        = millis()/1000;
-        String body; serializeJson(_doc, body);
         int code = http.POST(body);
-        bool resync = false;
-        if (code == 200) {
-            _doc.clear();
-            if (!deserializeJson(_doc, http.getString())) {
-                resync = _doc["resync"] | false;
-                const char* otaUrl = _doc["ota_url"];
-                const char* otaVer = _doc["ota_version"];
-                if (otaUrl && *otaUrl && otaVer && *otaVer) {
-                    pendingOtaUrl     = otaUrl;
-                    pendingOtaVersion = otaVer;
-                }
-                const char* camUrl = _doc["cam_ota_url"];
-                const char* camVer = _doc["cam_ota_version"];
-                if (camUrl && *camUrl && camVer && *camVer) {
-                    pendingCamOtaUrl     = camUrl;
-                    pendingCamOtaVersion = camVer;
-                }
-            }
-        } else if (code > 0) {
-            Logger.log(LOG_WARN, "API", "Heartbeat failed",
-                       serverErrMsg(code, http.getString()));
-        } else {
-            Logger.log(LOG_WARN, "API", "Heartbeat failed", transportErrMsg(code));
-        }
+        String resp = code > 0 ? http.getString() : "";
         http.end();
         xSemaphoreGiveRecursive(_mutex);
-        if (resync) {
+
+        if (code != 200) {
+            Logger.log(LOG_WARN, "API", "Heartbeat failed",
+                       code > 0 ? serverErrMsg(code, resp) : transportErrMsg(code));
+            return;
+        }
+        JsonDocument d;
+        if (deserializeJson(d, resp)) return;
+        if (d["resync"] | false) {
             Logger.log(LOG_INFO, "SYNC", "Server requested resync via heartbeat");
-            syncWhitelist();
+            whitelistStale = true;
+        }
+        if (!d["whitelist_version"].isNull()) {
+            long srv = d["whitelist_version"] | 0L;
+            if (srv != Config.whitelistVersion) whitelistStale = true;
+        }
+        const char* otaUrl = d["ota_url"];
+        const char* otaVer = d["ota_version"];
+        if (otaUrl && *otaUrl && otaVer && *otaVer) {
+            pendingOtaUrl     = otaUrl;
+            pendingOtaVersion = otaVer;
+            pendingOtaSha256  = d["ota_sha256"] | "";
+            pendingOtaSha256.toLowerCase();
+            pendingOtaSize    = d["ota_size"] | 0UL;
+        }
+        const char* camUrl = d["cam_ota_url"];
+        const char* camVer = d["cam_ota_version"];
+        if (camUrl && *camUrl && camVer && *camVer) {
+            pendingCamOtaUrl     = camUrl;
+            pendingCamOtaVersion = camVer;
         }
     }
 
@@ -483,9 +712,14 @@ public:
         if (!serverReachable()) {
             out = "{\"error\":\"device_offline\",\"offline\":true}"; return 503;
         }
-        // Uses its own client rather than _wcs so web UI proxy calls don't
-        // compete with syncTask for the shared SSL context or the mutex.
-        // lwip handles concurrent TCP connections natively.
+        // Own client, but taken under the same mutex as sync requests, so two
+        // TLS sessions (40–50 KB each) are never alive at once — that overlap
+        // is what exhausted the heap when the panel was open during a sync.
+        if (!xSemaphoreTakeRecursive(_mutex, pdMS_TO_TICKS(15000))) {
+            out = "{\"error\":\"busy\"}"; return 503;
+        }
+        struct Give { SemaphoreHandle_t m; ~Give() { xSemaphoreGiveRecursive(m); } } _give{_mutex};
+        _wcs.stop();  // drop the idle sync session before opening a second one
         WiFiClientSecure wcs; setupSecureClient(wcs);
         HTTPClient http;
         http.begin(wcs, Config.serverUrl + path);

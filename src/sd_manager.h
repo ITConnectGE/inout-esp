@@ -10,6 +10,8 @@
 #include <ArduinoJson.h>
 #include <WebServer.h>
 #include <vector>
+#include <algorithm>
+#include <mbedtls/sha256.h>
 #include "config.h"
 #include "logger.h"
 
@@ -52,6 +54,97 @@ private:
     }
 
     void mkdirP(const char* path) { if (!SD.exists(path)) SD.mkdir(path); }
+
+    // Read one '\n'-terminated line into a fixed buffer, trimming trailing
+    // whitespace. Replaces readStringUntil('\n'), which allocated a new String
+    // per line — thousands of alloc/free cycles per sync pass over events.log
+    // were the main source of heap fragmentation. Overlong lines are
+    // truncated (the remainder is consumed and dropped). Returns length, or
+    // -1 at EOF with nothing read.
+    static int readLine(File& f, char* buf, size_t cap) {
+        size_t n = 0; bool any = false;
+        while (f.available()) {
+            int c = f.read();
+            if (c < 0) break;
+            any = true;
+            if (c == '\n') break;
+            if (n + 1 < cap) buf[n++] = (char)c;
+        }
+        while (n > 0 && (buf[n-1] == '\r' || buf[n-1] == ' ' || buf[n-1] == '\t')) n--;
+        buf[n] = '\0';
+        return any ? (int)n : -1;
+    }
+
+    static constexpr size_t LINE_CAP = 512;
+    static bool isUnsyncedLine(const char* l) { return strstr(l, "\"synced\":false") != nullptr; }
+
+    // event_id of a log line. v0.6.0+ lines carry "eid"; older lines get a
+    // stable id derived from uid + timestamp, so they can be sent, matched
+    // in the server's answer, and marked like any other line.
+    static String eventIdOf(JsonObjectConst src) {
+        const char* eid = src["eid"] | "";
+        if (*eid) return String(eid);
+        String ts = src["ts"].isNull() ? String(src["happened_at"] | "") : String(src["ts"] | "");
+        String id = "x-"; id += (const char*)(src["uid"] | ""); id += "-";
+        for (size_t i = 0; i < ts.length(); i++) if (isDigit(ts[i])) id += ts[i];
+        return id.substring(0, 64);
+    }
+
+    static String sha256Hex(const String& in) {
+        uint8_t h[32];
+        mbedtls_sha256_context ctx;
+        mbedtls_sha256_init(&ctx);
+        mbedtls_sha256_starts(&ctx, 0);
+        mbedtls_sha256_update(&ctx, (const uint8_t*)in.c_str(), in.length());
+        mbedtls_sha256_finish(&ctx, h);
+        mbedtls_sha256_free(&ctx);
+        char hex[65];
+        for (int i = 0; i < 32; i++) snprintf(hex + i*2, 3, "%02x", h[i]);
+        return String(hex);
+    }
+
+    bool loadEmployees(JsonDocument& doc) {
+        File f = SD.open(EMPLOYEES_FILE, FILE_READ);
+        if (!f) return false;
+        DeserializationError err = deserializeJson(doc, f); f.close();
+        if (err) {
+            Logger.logf(LOG_ERROR, "SD", "employees.json parse error: %s", err.c_str());
+            return false;
+        }
+        if (!doc["employees"].is<JsonArray>()) doc["employees"].to<JsonArray>();
+        return true;
+    }
+
+    // Write to a temp file first, then swap — a power cut mid-write leaves
+    // the old employees.json intact instead of a truncated one.
+    bool saveEmployees(JsonDocument& doc) {
+        const char* tmp = "/data/emp.tmp";
+        File out = SD.open(tmp, FILE_WRITE);
+        if (!out) return false;
+        size_t n = serializeJson(doc, out); out.close();
+        if (n == 0) { SD.remove(tmp); return false; }
+        SD.remove(EMPLOYEES_FILE);
+        return SD.rename(tmp, EMPLOYEES_FILE);
+    }
+
+    // Active UIDs (active employee + active card), uppercased and sorted —
+    // the exact set the server's sync checksum is computed over (§10.2).
+    void activeUids(JsonDocument& doc, std::vector<String>& uids, bool& anyUnsynced) {
+        anyUnsynced = false;
+        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
+            if (!(emp["synced"] | true)) anyUnsynced = true;
+            if (String(emp["status"] | "active") != "active") continue;
+            for (JsonObject c : emp["cards"].as<JsonArray>()) {
+                if (String(c["status"] | "active") != "active") continue;
+                String u = c["uid"] | "";
+                u.toUpperCase();
+                if (u.length()) uids.push_back(u);
+            }
+        }
+        std::sort(uids.begin(), uids.end(),
+                  [](const String& a, const String& b) { return strcmp(a.c_str(), b.c_str()) < 0; });
+        uids.erase(std::unique(uids.begin(), uids.end()), uids.end());
+    }
 
     String makeLocalId() {
         char buf[24];
@@ -211,6 +304,7 @@ public:
                 card["status"] = "active";
                 card["issued_at"] = (long)(millis()/1000);
                 emp["synced"] = false;
+                emp.remove("sync_error");  // an edit is the retry
                 File out = SD.open(EMPLOYEES_FILE, FILE_WRITE);
                 if (!out) {
                     Logger.log(LOG_ERROR, "SD", "Cannot write employees.json — addCard failed",
@@ -253,6 +347,7 @@ public:
                 if (!updates["email"].isNull())      emp["email"]      = updates["email"];
                 if (!updates["status"].isNull())     emp["status"]     = updates["status"];
                 emp["synced"] = false;
+                emp.remove("sync_error");  // an edit is the retry
                 found = true; break;
             }
         }
@@ -309,7 +404,11 @@ public:
         return true;
     }
 
-    bool getUnsyncedEmployees(JsonArray& out) {
+    // Employees waiting to be pushed. Records the server refused
+    // (sync_error) are held back until someone edits them — resending an
+    // unchanged record only gets the same refusal. Capped per batch; the
+    // server takes at most 100.
+    bool getUnsyncedEmployees(JsonArray& out, int limit = 50) {
         if (!_mounted) return false;
         SdIoLock _lk(_ioMutex);
         if (!SD.exists(EMPLOYEES_FILE)) return false;
@@ -325,27 +424,210 @@ public:
             return false;
         }
         int n = 0;
-        for (JsonObject emp : doc["employees"].as<JsonArray>())
-            if (!(emp["synced"]|false)) { out.add(emp); n++; }
+        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
+            if (n >= limit) break;
+            if (emp["synced"] | false) continue;
+            if (!emp["sync_error"].isNull()) continue;
+            JsonObject o = out.add<JsonObject>();
+            o.set(emp);
+            o.remove("synced");
+            n++;
+        }
         return n > 0;
     }
 
-    void markEmployeesSynced(const JsonArray& serverIds) {
+    // Apply the server's per-record answer (§10.3): records in `ids` become
+    // synced and learn their server id; records in `errors` keep synced=false
+    // and get a sync_error message so they stop being resent until edited.
+    // Anything not mentioned in either list is left as it was. Returns the
+    // number of employees now stuck in sync_error.
+    int applyEmployeeSyncResult(JsonArrayConst ids, JsonArrayConst errors) {
+        if (!_mounted) return 0;
+        SdIoLock _lk(_ioMutex);
+        JsonDocument doc;
+        if (!loadEmployees(doc)) return 0;
+        int stuck = 0;
+        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
+            String lid = emp["local_id"] | "";
+            for (JsonObjectConst r : ids) {
+                if (lid != String(r["local_id"] | "")) continue;
+                int sid = r["server_id"] | 0;
+                if (sid > 0) emp["id"] = sid;
+                emp["synced"] = true;
+                emp.remove("sync_error");
+                break;
+            }
+            for (JsonObjectConst e : errors) {
+                if (lid != String(e["local_id"] | "")) continue;
+                // First message of the first failing field, e.g.
+                // "email: The email must be a valid email address."
+                String msg = e["error"] | "";
+                for (JsonPairConst kv : e["fields"].as<JsonObjectConst>()) {
+                    msg = String(kv.key().c_str()) + ": " + String(kv.value()[0] | "");
+                    break;
+                }
+                if (msg.isEmpty()) msg = "rejected by server";
+                emp["sync_error"] = msg.substring(0, 160);
+                break;
+            }
+            if (!emp["sync_error"].isNull()) stuck++;
+        }
+        if (!saveEmployees(doc))
+            Logger.log(LOG_ERROR, "SD", "Cannot write employees.json after employee sync");
+        return stuck;
+    }
+
+    int syncErrorCount() {
+        if (!_mounted) return 0;
+        SdIoLock _lk(_ioMutex);
+        JsonDocument doc;
+        if (!loadEmployees(doc)) return 0;
+        int n = 0;
+        for (JsonObject emp : doc["employees"].as<JsonArray>())
+            if (!emp["sync_error"].isNull()) n++;
+        return n;
+    }
+
+    // ── Delta whitelist sync (§10.2) ─────────────────────────────────────────
+    // Apply one page of GET /device/sync?since=. Upserts replace the whole
+    // server record (fields + active cards), except where a local edit is
+    // still waiting to be pushed — the local version wins until it syncs, as
+    // before. On a full page every server id is collected in `seen` so
+    // finishFullSync() can drop the ones the server no longer has.
+    bool applySyncPage(JsonObjectConst page, bool full, std::vector<int>& seen,
+                       int& nUpserts, int& nDeletes) {
+        if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
+        JsonDocument doc;
+        if (SD.exists(EMPLOYEES_FILE) && !loadEmployees(doc)) return false;
+        JsonArray arr = doc["employees"].is<JsonArray>()
+                      ? doc["employees"].as<JsonArray>()
+                      : doc["employees"].to<JsonArray>();
+
+        for (JsonObjectConst up : page["upserts"].as<JsonArrayConst>()) {
+            int sid = up["id"] | 0;
+            if (sid <= 0) continue;
+            if (full) seen.push_back(sid);
+            JsonObject target;
+            for (JsonObject emp : arr)
+                if ((emp["id"] | 0) == sid) { target = emp; break; }
+            if (!target.isNull() && !(target["synced"] | true)) continue;  // local edit pending
+            if (target.isNull()) {
+                target = arr.add<JsonObject>();
+                target["local_id"] = String("srv_") + String(sid);
+                target["phone"] = ""; target["email"] = "";
+            }
+            target["id"]         = sid;
+            target["first_name"] = up["first_name"] | "";
+            target["last_name"]  = up["last_name"]  | "";
+            target["department"] = up["department"] | "";
+            target["position"]   = up["position"]   | "";
+            target["status"]     = up["status"]     | "active";
+            target["synced"]     = true;
+            target.remove("sync_error");
+            JsonArray cards = target["cards"].to<JsonArray>();
+            for (JsonObjectConst c : up["cards"].as<JsonArrayConst>()) {
+                JsonObject card = cards.add<JsonObject>();
+                card["uid"]    = c["uid"]    | "";
+                card["status"] = c["status"] | "active";
+            }
+            nUpserts++;
+        }
+
+        // Deleted / disabled employees — the server is the authority on
+        // removal, so this applies even over a pending local edit.
+        for (JsonVariantConst v : page["deletes"]["employees"].as<JsonArrayConst>()) {
+            int sid = v | 0;
+            if (sid <= 0) continue;
+            for (int i = (int)arr.size() - 1; i >= 0; i--)
+                if ((arr[i]["id"] | 0) == sid) { arr.remove(i); nDeletes++; }
+        }
+        // Revoked cards leave every employee, local ones included: a card the
+        // server took away must stop opening the door immediately.
+        for (JsonVariantConst v : page["deletes"]["cards"].as<JsonArrayConst>()) {
+            String uid = v | "";
+            if (uid.isEmpty()) continue;
+            for (JsonObject emp : arr) {
+                JsonArray cards = emp["cards"].as<JsonArray>();
+                for (int i = (int)cards.size() - 1; i >= 0; i--)
+                    if (uid.equalsIgnoreCase(String(cards[i]["uid"] | ""))) { cards.remove(i); nDeletes++; }
+            }
+        }
+
+        doc["updated_at"] = (long)(millis() / 1000);
+        if (!saveEmployees(doc)) {
+            Logger.log(LOG_ERROR, "SD", "Cannot write employees.json during whitelist sync");
+            return false;
+        }
+        return true;
+    }
+
+    // End of a full sync: drop server-origin employees the server didn't send.
+    void finishFullSync(const std::vector<int>& seen) {
         if (!_mounted) return;
         SdIoLock _lk(_ioMutex);
-        if (!SD.exists(EMPLOYEES_FILE)) return;
         JsonDocument doc;
-        File f = SD.open(EMPLOYEES_FILE, FILE_READ);
-        if (!f) return;
-        deserializeJson(doc, f); f.close();
-        for (JsonObject emp : doc["employees"].as<JsonArray>()) {
-            emp["synced"] = true;
-            for (JsonObject sid : serverIds)
-                if (String(sid["local_id"]|"") == String(emp["local_id"]|""))
-                    emp["id"] = sid["server_id"]|0;
+        if (!loadEmployees(doc)) return;
+        JsonArray arr = doc["employees"].as<JsonArray>();
+        int removed = 0;
+        for (int i = (int)arr.size() - 1; i >= 0; i--) {
+            int sid = arr[i]["id"] | 0;
+            bool synced = arr[i]["synced"] | true;
+            if (sid > 0 && synced && std::find(seen.begin(), seen.end(), sid) == seen.end()) {
+                arr.remove(i); removed++;
+            }
         }
-        File out = SD.open(EMPLOYEES_FILE, FILE_WRITE);
-        if (out) { serializeJson(doc, out); out.close(); }
+        if (removed && !saveEmployees(doc))
+            Logger.log(LOG_ERROR, "SD", "Cannot write employees.json after full sync");
+        if (removed) Logger.logf(LOG_INFO, "SYNC", "Full sync removed %d stale employee(s)", removed);
+    }
+
+    // Regenerate the flat whitelist.json fallback from employees.json, and
+    // compute the checksum the server sends on the last sync page. Written
+    // with print() rather than a JsonDocument — one UID at a time.
+    // `comparable` is false while local edits are unsynced: their cards
+    // aren't on the server yet, so a mismatch would mean nothing.
+    bool rebuildWhitelist(long version, int& count, String& hash, bool& comparable) {
+        if (!_mounted) return false;
+        SdIoLock _lk(_ioMutex);
+        std::vector<String> uids;
+        bool anyUnsynced = false;
+        {
+            JsonDocument doc;
+            if (!loadEmployees(doc)) return false;
+            activeUids(doc, uids, anyUnsynced);
+        }
+        comparable = !anyUnsynced;
+        count = (int)uids.size();
+        String joined;
+        joined.reserve(uids.size() * 15);
+        for (size_t i = 0; i < uids.size(); i++) { if (i) joined += ','; joined += uids[i]; }
+        hash = sha256Hex(joined);
+
+        File wf = SD.open(WHITELIST_FILE, FILE_WRITE);
+        if (!wf) return false;
+        wf.print("{\"uids\":[");
+        for (size_t i = 0; i < uids.size(); i++) {
+            if (i) wf.print(',');
+            wf.print('"'); wf.print(uids[i]); wf.print('"');
+        }
+        wf.print("],\"version\":"); wf.print(version); wf.print('}');
+        wf.close();
+        return true;
+    }
+
+    // Version stored by rebuildWhitelist(); 0 when the file is missing, is
+    // from older firmware, or doesn't parse — all of which mean "full sync".
+    long readWhitelistVersion() {
+        if (!_mounted) return 0;
+        SdIoLock _lk(_ioMutex);
+        File f = SD.open(WHITELIST_FILE, FILE_READ);
+        if (!f) return 0;
+        JsonDocument filter; filter["version"] = true;
+        JsonDocument d;
+        DeserializationError err = deserializeJson(d, f, DeserializationOption::Filter(filter));
+        f.close();
+        return err ? 0 : (long)(d["version"] | 0L);
     }
 
     bool updateWhitelist(const String& json) {
@@ -474,7 +756,8 @@ public:
 
     void logEvent(const String& uid, const String& name,
                   const String& direction, const String& decision,
-                  const String& happened_at, const String& reason) {
+                  const String& happened_at, const String& reason,
+                  const String& eventId) {
         if (!_mounted) return;
         SdIoLock _lk(_ioMutex);
         File f = SD.open(EVENTS_LOG, FILE_APPEND);
@@ -487,7 +770,7 @@ public:
         // Keep "dir" and "ts" for local panel compatibility; "reason" is new
         doc["uid"]=uid; doc["name"]=name; doc["dir"]=direction;
         doc["decision"]=decision; doc["ts"]=happened_at;
-        doc["reason"]=reason; doc["synced"]=false;
+        doc["reason"]=reason; doc["eid"]=eventId; doc["synced"]=false;
         serializeJson(doc, f); f.println(); f.close();
     }
 
@@ -498,10 +781,9 @@ public:
         File f = SD.open(EVENTS_LOG, FILE_READ);
         if (!f) return 0;
         int n = 0;
-        while (f.available()) {
-            String l = f.readStringUntil('\n'); l.trim();
-            if (l.length() > 5 && l.indexOf("\"synced\":false") >= 0) n++;
-        }
+        char l[LINE_CAP];
+        while (readLine(f, l, sizeof(l)) >= 0)
+            if (strlen(l) > 5 && isUnsyncedLine(l)) n++;
         f.close(); return n;
     }
 
@@ -512,9 +794,9 @@ public:
         File f = SD.open(EVENTS_LOG, FILE_READ);
         if (!f) return false;
         int n = 0;
-        while (f.available() && n < limit) {
-            String l = f.readStringUntil('\n'); l.trim();
-            if (l.length() < 5 || l.indexOf("\"synced\":false") < 0) continue;
+        char l[LINE_CAP];
+        while (n < limit && readLine(f, l, sizeof(l)) >= 0) {
+            if (strlen(l) < 5 || !isUnsyncedLine(l)) continue;
             JsonDocument tmp;
             if (deserializeJson(tmp, l)) continue;
             JsonObject src = tmp.as<JsonObject>();
@@ -528,9 +810,10 @@ public:
                 ? String(src["direction"] | "unknown")
                 : String(src["dir"]       | "unknown");
             // Skip events whose timestamp is empty or the pre-NTP fallback ("~NNNms").
-            // markAllSynced() will clear them once the valid batch succeeds.
+            // dropUnsendableEvents() clears them once no valid event is left.
             if (ts_val.length() == 0 || ts_val[0] == '~') continue;
             JsonObject dst = out.add<JsonObject>();
+            dst["event_id"]    = eventIdOf(src);
             dst["uid"]         = src["uid"]      | "";
             dst["direction"]   = dir_val;
             dst["decision"]    = src["decision"] | "";
@@ -553,45 +836,77 @@ public:
         return SD.exists(path) ? path : "";
     }
 
-    // Mark the first n unsynced events in events.log as synced (in file order).
-    void markNEventsSynced(int n) {
-        if (!_mounted || n <= 0) return;
+    // Mark exactly the events the server answered for (accepted, duplicate
+    // or rejected) as synced, matched by event_id. Replaces the old
+    // "mark the first N unsynced lines", which went wrong whenever a skipped
+    // pre-NTP line sat among the ones that were sent.
+    int markEventsSynced(const std::vector<String>& ids) {
+        if (!_mounted || ids.empty()) return 0;
         SdIoLock _lk(_ioMutex);
-        if (!SD.exists(EVENTS_LOG)) return;
-        String tmp = "/data/ev.tmp";
+        if (!SD.exists(EVENTS_LOG)) return 0;
+        const char* tmp = "/data/ev.tmp";
         File src = SD.open(EVENTS_LOG, FILE_READ);
         File dst = SD.open(tmp, FILE_WRITE);
-        if (!src || !dst) { if(src)src.close(); if(dst)dst.close(); return; }
+        if (!src || !dst) { if(src)src.close(); if(dst)dst.close(); return 0; }
         int marked = 0;
-        while (src.available()) {
-            String l = src.readStringUntil('\n'); l.trim();
-            if (l.length() < 5) continue;
-            if (marked < n && l.indexOf("\"synced\":false") >= 0) {
-                l.replace("\"synced\":false", "\"synced\":true");
-                marked++;
+        char l[LINE_CAP];
+        while (readLine(src, l, sizeof(l)) >= 0) {
+            if (strlen(l) < 5) continue;
+            if (isUnsyncedLine(l)) {
+                JsonDocument d;
+                if (!deserializeJson(d, l)) {
+                    String id = eventIdOf(d.as<JsonObjectConst>());
+                    if (std::find(ids.begin(), ids.end(), id) != ids.end()) {
+                        String s(l);
+                        s.replace("\"synced\":false", "\"synced\":true");
+                        dst.println(s);
+                        marked++;
+                        continue;
+                    }
+                }
             }
             dst.println(l);
         }
         src.close(); dst.close();
         SD.remove(EVENTS_LOG); SD.rename(tmp, EVENTS_LOG);
+        return marked;
     }
 
-    void markAllSynced() {
-        if (!_mounted) return;
+    // Events recorded before the clock was set ("~NNNms" or empty timestamp)
+    // can never be sent — the server needs a real time. Mark only those, and
+    // only once nothing sendable is left in front of them.
+    int dropUnsendableEvents() {
+        if (!_mounted) return 0;
         SdIoLock _lk(_ioMutex);
-        if (!SD.exists(EVENTS_LOG)) return;
-        String tmp = "/data/ev.tmp";
+        if (!SD.exists(EVENTS_LOG)) return 0;
+        const char* tmp = "/data/ev.tmp";
         File src = SD.open(EVENTS_LOG, FILE_READ);
         File dst = SD.open(tmp, FILE_WRITE);
-        if (!src || !dst) { if(src)src.close(); if(dst)dst.close(); return; }
-        while (src.available()) {
-            String l = src.readStringUntil('\n'); l.trim();
-            if (l.length() < 5) continue;
-            l.replace("\"synced\":false", "\"synced\":true");
+        if (!src || !dst) { if(src)src.close(); if(dst)dst.close(); return 0; }
+        int dropped = 0;
+        char l[LINE_CAP];
+        while (readLine(src, l, sizeof(l)) >= 0) {
+            if (strlen(l) < 5) continue;
+            if (isUnsyncedLine(l)) {
+                JsonDocument d;
+                bool bad = true;
+                if (!deserializeJson(d, l)) {
+                    const char* ts = d["ts"].isNull() ? (d["happened_at"] | "") : (d["ts"] | "");
+                    bad = (*ts == '\0' || *ts == '~');
+                }
+                if (bad) {
+                    String s(l);
+                    s.replace("\"synced\":false", "\"synced\":true");
+                    dst.println(s);
+                    dropped++;
+                    continue;
+                }
+            }
             dst.println(l);
         }
         src.close(); dst.close();
         SD.remove(EVENTS_LOG); SD.rename(tmp, EVENTS_LOG);
+        return dropped;
     }
 
     void trimLog() {
@@ -601,7 +916,8 @@ public:
         File f = SD.open(EVENTS_LOG, FILE_READ);
         if (!f) return;
         int total = 0;
-        while (f.available()) { f.readStringUntil('\n'); total++; }
+        char l[LINE_CAP];
+        while (readLine(f, l, sizeof(l)) >= 0) total++;
         f.close();
         if (total <= MAX_LOG_LINES) return;
         int skip = total - MAX_LOG_LINES;
@@ -610,7 +926,7 @@ public:
         File dst = SD.open(tmp, FILE_WRITE);
         if (!f || !dst) { if(f)f.close(); if(dst)dst.close(); return; }
         int i = 0;
-        while (f.available()) { String l = f.readStringUntil('\n'); if(i++>=skip) dst.println(l); }
+        while (readLine(f, l, sizeof(l)) >= 0) { if (i++ >= skip) dst.println(l); }
         f.close(); dst.close();
         SD.remove(EVENTS_LOG); SD.rename(tmp, EVENTS_LOG);
     }

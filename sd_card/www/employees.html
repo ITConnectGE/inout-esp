@@ -197,7 +197,9 @@ function renderEmployees(){
       <td class="hide-xs" style="color:var(--muted);font-size:12px"><div>${e.department||'—'}</div>${e.position?`<div style="font-size:11px;color:var(--hint)">${e.position}</div>`:''}</td>
       <td style="color:var(--muted)">${(e.cards||[]).length}</td>
       <td><span class="badge ${(e.status||'active')==='active'?'b-active':'b-inactive'}">${e.status||'active'}</span></td>
-      <td><span class="badge ${(e.synced!==false)?'b-synced':'b-pending'}">${(e.synced!==false)?'Synced':'Local'}</span></td>
+      <td>${e.sync_error
+        ?`<span class="badge b-lost" title="${String(e.sync_error).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')}">Sync error</span>`
+        :`<span class="badge ${(e.synced!==false)?'b-synced':'b-pending'}">${(e.synced!==false)?'Synced':'Local'}</span>`}</td>
       <td style="display:flex;gap:4px">
         <button class="btn-icon" title="Add card" onclick="openAddCard('${e.local_id||''}')">🪪</button>
         <button class="btn-icon" title="Edit" onclick="openEditEmployeeById('${(e.local_id||'').replace(/'/g,'')}')">✎</button>
